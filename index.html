@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Interactive Lesson Generator</title>
+    <link rel="stylesheet" href="index.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://esm.run/@google/genai",
+    "safevalues/dom": "https://cdn.jsdelivr.net/npm/safevalues@1.2.0/dist/mjs/dom/index.js",
+    "safevalues": "https://cdn.jsdelivr.net/npm/safevalues@1.2.0/dist/mjs/index.js",
+    "markdown-it": "https://esm.sh/markdown-it@^14.1.0",
+    "markdown-it-texmath": "https://esm.sh/markdown-it-texmath@^1.0.0",
+    "katex": "https://esm.sh/katex@^0.16.11",
+    "safevalues/": "https://aistudiocdn.com/safevalues@^1.2.0/",
+    "jszip": "https://esm.sh/jszip@3.10.1"
+  }
+}
+</script>
+  <link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <header class="app-header">
+      <h1><i class="fa-solid fa-robot"></i> AI Interactive Lesson Generator</h1>
+    </header>
+    <main class="container">
+      <div class="controls-panel" role="region" aria-labelledby="controls-heading">
+        <h2 id="controls-heading">Create a Lesson</h2>
+        <div class="form-group">
+          <label for="grade-select">Grade Level</label>
+          <select id="grade-select" aria-label="Select Grade Level">
+            <option value="1">Grade 1</option>
+            <option value="2">Grade 2</option>
+            <option value="3">Grade 3</option>
+            <option value="4">Grade 4</option>
+            <option value="5">Grade 5</option>
+            <option value="6">Grade 6</option>
+            <option value="7">Grade 7</option>
+            <option value="8">Grade 8</option>
+            <option value="9">Grade 9</option>
+            <option value="10">Grade 10</option>
+            <option value="11">Grade 11</option>
+            <option value="12">Grade 12</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="subject-select">Subject</label>
+          <select id="subject-select" aria-label="Select Subject">
+            <option value="Math">Math</option>
+            <option value="Science">Science</option>
+            <option value="English">English</option>
+            <option value="Hindi">Hindi</option>
+            <option value="Social Studies">Social Studies</option>
+            <option value="History">History</option>
+            <option value="Geography">Geography</option>
+            <option value="Political Science">Political Science</option>
+            <option value="Physics">Physics</option>
+            <option value="Chemistry">Chemistry</option>
+            <option value="Biology">Biology</option>
+            <option value="Accountancy">Accountancy</option>
+            <option value="Business Studies">Business Studies</option>
+            <option value="Economics">Economics</option>
+            <option value="Computer Science">Computer Science</option>
+            <option value="Environmental Studies">Environmental Studies</option>
+            <option value="Art">Art</option>
+            <option value="Physical Education">Physical Education</option>
+          </select>
+        </div>
+         <div class="form-group">
+          <label for="language-select">Language</label>
+          <select id="language-select" aria-label="Select Language">
+            <option value="English">English</option>
+            <option value="Hindi">Hindi</option>
+            <option value="Telugu">Telugu</option>
+            <option value="Marathi">Marathi</option>
+            <option value="Gujarati">Gujarati</option>
+          </select>
+        </div>
+        <fieldset>
+            <legend>Context & Localization</legend>
+            <div class="form-group">
+              <label for="country-select">Country</label>
+              <select id="country-select" aria-label="Select Country">
+                <option value="USA">United States</option>
+                <option value="India">India</option>
+                <option value="UK">United Kingdom</option>
+                <option value="Canada">Canada</option>
+                <option value="Australia">Australia</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="state-input">State / Region (Optional)</label>
+              <input type="text" id="state-input" placeholder="e.g., California or Maharashtra" aria-label="Enter State or Region"/>
+            </div>
+            <div class="form-group">
+                <label for="pdf-upload">PDF Snapshot (Optional)</label>
+                <input type="file" id="pdf-upload" accept="application/pdf" aria-label="Upload a PDF for context"/>
+                <small>Provide a PDF with state-specific terms or content.</small>
+            </div>
+            <div class="form-group">
+                <label for="video-upload">Video Upload (Optional, max 100MB)</label>
+                <input type="file" id="video-upload" accept="video/*" aria-label="Upload a video for context"/>
+                <small>Extract scripts and teaching flow from the video.</small>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label for="video-link">Video Link (Optional)</label>
+                <input type="text" id="video-link" placeholder="YouTube or other public link" aria-label="Enter video link"/>
+                <small>Provide a URL for additional context.</small>
+            </div>
+        </fieldset>
+        <div class="form-group">
+          <label for="topic-input">Topic</label>
+          <input type="text" id="topic-input" placeholder="e.g., Photosynthesis" aria-label="Enter Topic"/>
+        </div>
+        <div class="form-group">
+          <label for="specific-prompt-input">Specific Instructions (Optional)</label>
+          <textarea id="specific-prompt-input" rows="3" placeholder="e.g., Focus on the role of bees, or make the tone more playful."></textarea>
+        </div>
+        <div class="form-group">
+            <label for="pages-input">Number of Pages/Steps: <span id="pages-value">5</span></label>
+            <input type="range" id="pages-input" value="5" min="1" max="15" aria-label="Select number of pages"/>
+        </div>
+        <div class="form-group">
+            <label for="image-upload">Upload Images (Optional)</label>
+            <input type="file" id="image-upload" multiple accept="image/*" aria-label="Upload your own images"/>
+            <small>Images will be assigned to pages in order.</small>
+        </div>
+        <button id="generate-btn">
+            <span class="btn-text">Generate Lesson</span>
+            <i class="fa-solid fa-wand-magic-sparkles"></i>
+        </button>
+      </div>
+      <div class="results-panel" role="region" aria-labelledby="results-heading">
+        <div id="loader" class="loader" role="status" aria-live="polite" style="display: none;">
+          <div class="spinner"></div>
+          <p>Generating your lesson... this may take a moment.</p>
+          <p id="loading-status" class="loading-status"></p>
+        </div>
+        <div id="placeholder" class="placeholder">
+          <i class="fa-solid fa-book-open-reader"></i>
+          <h2 id="results-heading">Your lesson preview will appear here!</h2>
+          <p>Fill out the form and click "Generate Lesson" to begin.</p>
+        </div>
+        <div id="lesson-preview-container" class="lesson-preview-container" style="display: none;">
+          <div class="preview-controls">
+            <h3 id="live-preview-heading">Live Preview (Content is editable)</h3>
+            <button id="download-btn">
+              <i class="fa-solid fa-download"></i> Download ZIP
+            </button>
+          </div>
+          <div id="lesson-preview" aria-labelledby="live-preview-heading"></div>
+        </div>
+        <div id="error-message" class="error-message" role="alert" style="display: none;"></div>
+      </div>
+    </main>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
