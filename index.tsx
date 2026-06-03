@@ -249,6 +249,118 @@ function playAudio(buffer: AudioBuffer, button: HTMLButtonElement) {
     };
 }
 
+function stripHtmlToText(text: string): string {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = text;
+    return tempDiv.innerText || text;
+}
+
+function getLessonTextForCurrentLanguage(data: string | BilingualText, isBilingual = languageSelect.value !== 'English'): string {
+    if (typeof data === 'string') return data;
+    return isBilingual ? data.targetLang : data.en;
+}
+
+function getAudioTextForScope(scope: string, stepNum?: string): { text: string; cacheKey: string; fileName: string } {
+    if (!currentLessonData) {
+        return { text: '', cacheKey: '', fileName: '' };
+    }
+
+    const isBilingual = languageSelect.value !== 'English';
+    const getText = (data: string | BilingualText) => getLessonTextForCurrentLanguage(data, isBilingual);
+
+    if (scope === 'engaging-question') {
+        return {
+            text: getText(currentLessonData.engagingQuestion),
+            cacheKey: 'engaging-question-full-audio',
+            fileName: 'engaging-question.wav'
+        };
+    }
+
+    if (scope === 'step' && stepNum) {
+        const step = currentLessonData.steps[parseInt(stepNum, 10) - 1];
+        if (!step) {
+            return { text: '', cacheKey: '', fileName: '' };
+        }
+
+        const combinedText = [
+            stripHtmlToText(getText(step.title)),
+            stripHtmlToText(getText(step.explanation)),
+            stripHtmlToText(getText(step.nextStepHint))
+        ].filter(Boolean).join('. ');
+
+        return {
+            text: combinedText,
+            cacheKey: `step-${stepNum}-full-audio`,
+            fileName: `step-${stepNum}.wav`
+        };
+    }
+
+    if (scope === 'summary') {
+        const summaryTitleText = getText(currentLessonData.uiTranslations.lessonSummary);
+        const keyTakeawaysTitleText = getText(currentLessonData.uiTranslations.keyTakeaways);
+        const takeawaysText = currentLessonData.keyTakeaways.map(getText).join('. ');
+
+        return {
+            text: [`${summaryTitleText}. ${keyTakeawaysTitleText}.`, takeawaysText].filter(Boolean).join(' '),
+            cacheKey: 'summary-full-audio',
+            fileName: 'summary.wav'
+        };
+    }
+
+    return { text: '', cacheKey: '', fileName: '' };
+}
+
+/**
+ * Converts math and markup-heavy lesson text into cleaner speech text for TTS.
+ */
+function preprocessTextForSpeech(rawText: string): string {
+    if (!rawText) return '';
+
+    let text = stripHtmlToText(rawText);
+    text = text.replace(/\|\|\|/g, '');
+
+    const mathRegex = /\$\$([\s\S]+?)\$\$|\$([\s\S]+?)\$/g;
+    text = text.replace(mathRegex, (_match, blockMath, inlineMath) => {
+        let math = blockMath || inlineMath || '';
+
+        math = math.replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, '$1 over $2');
+        math = math.replace(/\\sqrt\{([^}]+)\}/g, 'square root of $1');
+        math = math.replace(/\+/g, ' plus ');
+        math = math.replace(/\s*-\s*/g, ' minus ');
+        math = math.replace(/\\times/g, ' times ');
+        math = math.replace(/\s*\*\s*/g, ' times ');
+        math = math.replace(/\\cdot/g, ' times ');
+        math = math.replace(/\\div/g, ' divided by ');
+        math = math.replace(/\s*\/\s*/g, ' divided by ');
+        math = math.replace(/\s*=\s*/g, ' equals ');
+        math = math.replace(/\s*<\s*/g, ' less than ');
+        math = math.replace(/\s*>\s*/g, ' greater than ');
+        math = math.replace(/\\leq|\\le/g, ' less than or equal to ');
+        math = math.replace(/\\geq|\\ge/g, ' greater than or equal to ');
+        math = math.replace(/\\neq|\\ne/g, ' not equal to ');
+        math = math.replace(/\^2/g, ' squared ');
+        math = math.replace(/\^3/g, ' cubed ');
+        math = math.replace(/\^(\d+)/g, ' to the power of $1 ');
+        math = math.replace(/\^\{([^}]+)\}/g, ' to the power of $1 ');
+        math = math.replace(/\\pi/gi, ' pi ');
+        math = math.replace(/\\theta/gi, ' theta ');
+        math = math.replace(/\\sin/gi, ' sine ');
+        math = math.replace(/\\cos/gi, ' cosine ');
+        math = math.replace(/\\tan/gi, ' tangent ');
+        math = math.replace(/\\log/gi, ' log ');
+        math = math.replace(/\\ln/gi, ' natural log ');
+        math = math.replace(/\\(?:text|mbox|mathrm)\{([^}]+)\}/g, '$1');
+        math = math.replace(/\\[a-zA-Z]+/g, (match) => ` ${match.substring(1)} `);
+        math = math.replace(/[\\{}\[\]()_]/g, ' ');
+
+        return math;
+    });
+
+    text = text.replace(/\$(\d+(\.\d+)?)/g, '$1 dollars');
+    text = text.replace(/\$/g, '');
+    return text.replace(/\s+/g, ' ').trim();
+}
+
 
 /**
  * Reusable function to call the Gemini TTS API.
@@ -256,8 +368,9 @@ function playAudio(buffer: AudioBuffer, button: HTMLButtonElement) {
  * @returns A promise that resolves with the base64 encoded audio string, or null on failure.
  */
 async function getTtsAudio(rawText: string): Promise<string | null> {
-    // Prompt engineering to request a specific accent and voice style.
-    const textToSpeak = `Read the following in a clear, professional female voice with an Indian English accent: "${rawText}"`;
+    const processedText = preprocessTextForSpeech(rawText);
+    const textToSpeak = `Read the following aloud in a clear, professional female voice with an Indian English accent. Pronounce mathematical symbols and equations naturally. Do not say "dollar sign" for LaTeX delimiters. Follow the natural phrasing of the sentence:
+"${processedText}"`;
 
     const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
@@ -293,38 +406,7 @@ async function handlePageAudioButtonClick(event: Event) {
     // Stop any other audio before starting a new one.
     stopCurrentAudio();
 
-    const scope = button.dataset.scope!;
-    const stepNum = button.dataset.step;
-    
-    let combinedText = '';
-    let cacheKey = '';
-
-    const isBilingual = languageSelect.value !== 'English';
-    const getText = (data: string | BilingualText) => (isBilingual && typeof data === 'object') ? data.targetLang : data as string;
-
-
-    if (scope === 'engaging-question') {
-        combinedText = getText(currentLessonData!.engagingQuestion);
-        cacheKey = 'engaging-question-full-audio';
-    } else if (scope === 'step' && stepNum) {
-        const step = currentLessonData!.steps[parseInt(stepNum, 10) - 1];
-        const title = getText(step.title);
-        const explanation = getText(step.explanation);
-        const hint = getText(step.nextStepHint);
-        
-        combinedText = [title, explanation, hint].filter(Boolean).join('. ');
-        cacheKey = `step-${stepNum}-full-audio`;
-    } else if (scope === 'summary') {
-        const summaryTitleText = getText(currentLessonData!.uiTranslations.lessonSummary);
-        const keyTakeawaysTitleText = getText(currentLessonData!.uiTranslations.keyTakeaways);
-        const takeawaysText = currentLessonData!.keyTakeaways.map(getText).join('. ');
-        
-        combinedText = [
-            `${summaryTitleText}. ${keyTakeawaysTitleText}.`,
-            takeawaysText
-        ].filter(Boolean).join(' ');
-        cacheKey = 'summary-full-audio';
-    }
+    const { text: combinedText, cacheKey } = getAudioTextForScope(button.dataset.scope!, button.dataset.step);
 
     if (!combinedText || combinedText.trim().length === 0) return;
 
@@ -361,8 +443,64 @@ async function handlePageAudioButtonClick(event: Event) {
 
     } catch (error) {
         console.error("Audio generation failed:", error);
-        showError(`Failed to generate audio. ${error instanceof Error ? error.message : String(error)}`);
+        showError(getFriendlyErrorMessage("Failed to generate audio", error));
         stopCurrentAudio(); // Reset button state on error
+    }
+}
+
+/**
+ * Regenerates audio from the latest edited text and updates the playback cache.
+ */
+async function handlePageAudioUpdateClick(event: Event) {
+    initializeAudioContext();
+    const button = event.currentTarget as HTMLButtonElement;
+
+    stopCurrentAudio();
+
+    const { text: combinedText, cacheKey } = getAudioTextForScope(button.dataset.scope!, button.dataset.step);
+    if (!combinedText || combinedText.trim().length === 0) return;
+
+    const originalHtml = button.innerHTML;
+    button.classList.add('loading');
+    button.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i>`;
+    button.title = 'Updating Audio...';
+    button.disabled = true;
+
+    try {
+        const base64Audio = await getTtsAudio(combinedText);
+        if (!base64Audio) {
+            throw new Error('No audio data received from the API.');
+        }
+
+        const audioBuffer = await decodeAudioData(
+            decode(base64Audio),
+            outputAudioContext,
+            24000,
+            1
+        );
+
+        audioCache.set(cacheKey, audioBuffer);
+        button.innerHTML = `<i class="fa-solid fa-check"></i>`;
+        button.title = 'Audio updated';
+
+        const parentGroup = button.closest('.audio-controls-group');
+        const playBtn = parentGroup?.querySelector('.audio-btn') as HTMLButtonElement | null;
+        playAudio(audioBuffer, playBtn || button);
+
+        setTimeout(() => {
+            button.classList.remove('loading');
+            button.innerHTML = originalHtml;
+            button.title = 'Update/Regenerate Audio';
+            button.disabled = false;
+        }, 1500);
+    } catch (error) {
+        console.error("Audio update failed:", error);
+        showError(getFriendlyErrorMessage("Failed to update audio", error));
+        stopCurrentAudio();
+        button.classList.remove('loading');
+        button.innerHTML = originalHtml;
+        button.title = 'Update/Regenerate Audio';
+        button.disabled = false;
     }
 }
 
@@ -375,6 +513,17 @@ function createPageAudioControls(scope: 'engaging-question' | 'step' | 'summary'
     container.className = 'audio-controls-group';
     
     const playBtn = createPageAudioButton(scope, stepNum);
+
+    const updateBtn = document.createElement('button');
+    updateBtn.className = 'audio-update-btn';
+    updateBtn.innerHTML = `<i class="fa-solid fa-arrows-rotate"></i>`;
+    updateBtn.setAttribute('aria-label', 'Update audio to reflect text changes');
+    updateBtn.title = 'Update/Regenerate Audio';
+    updateBtn.dataset.scope = scope;
+    if (stepNum) {
+        updateBtn.dataset.step = String(stepNum);
+    }
+    updateBtn.addEventListener('click', handlePageAudioUpdateClick);
     
     const downloadBtn = document.createElement('button');
     downloadBtn.className = 'audio-download-btn';
@@ -388,6 +537,7 @@ function createPageAudioControls(scope: 'engaging-question' | 'step' | 'summary'
     downloadBtn.addEventListener('click', handleIndividualAudioDownload);
     
     container.appendChild(playBtn);
+    container.appendChild(updateBtn);
     container.appendChild(downloadBtn);
     return container;
 }
@@ -463,48 +613,7 @@ async function handleIndividualAudioDownload(event: Event) {
     button.disabled = true;
     button.innerHTML = isIconButton ? `<i class="fa-solid fa-spinner fa-spin"></i>` : `<i class="fa-solid fa-spinner fa-spin"></i> Generating...`;
 
-    const scope = button.dataset.scope!;
-    const stepNum = button.dataset.step;
-
-    let textToSpeak = '';
-    let fileName = '';
-
-    const isBilingual = languageSelect.value !== 'English';
-    const getText = (data: string | BilingualText): string => {
-        if (typeof data === 'string') return data;
-        return isBilingual ? (data as BilingualText).targetLang : (data as BilingualText).en;
-    };
-    
-    const tempDiv = document.createElement('div');
-
-    if (scope === 'engaging-question') {
-        textToSpeak = getText(currentLessonData!.engagingQuestion);
-        fileName = 'engaging-question.wav';
-    } else if (scope === 'step' && stepNum) {
-        const step = currentLessonData!.steps[parseInt(stepNum, 10) - 1];
-        
-        tempDiv.innerHTML = getText(step.explanation);
-        const cleanExplanation = tempDiv.innerText;
-        tempDiv.innerHTML = getText(step.nextStepHint);
-        const cleanHint = tempDiv.innerText;
-
-        textToSpeak = [
-            getText(step.title),
-            cleanExplanation,
-            cleanHint
-        ].filter(Boolean).join('. ');
-        fileName = `step-${stepNum}.wav`;
-    } else if (scope === 'summary') {
-        const summaryTitleText = getText(currentLessonData!.uiTranslations.lessonSummary);
-        const keyTakeawaysTitleText = getText(currentLessonData!.uiTranslations.keyTakeaways);
-        const takeawaysText = currentLessonData!.keyTakeaways.map(getText).join('. ');
-        
-        textToSpeak = [
-            `${summaryTitleText}. ${keyTakeawaysTitleText}.`,
-            takeawaysText
-        ].filter(Boolean).join(' ');
-        fileName = 'summary.wav';
-    }
+    const { text: textToSpeak, fileName } = getAudioTextForScope(button.dataset.scope!, button.dataset.step);
 
     if (!textToSpeak.trim()) {
         showError('No text content found to generate audio.');
@@ -540,7 +649,7 @@ async function handleIndividualAudioDownload(event: Event) {
 
     } catch (err) {
         console.error(`Individual audio download failed for ${fileName}:`, err);
-        showError(`Could not generate audio for this section. Please try again later. Error: ${err instanceof Error ? err.message : String(err)}`);
+        showError(getFriendlyErrorMessage(`Could not generate audio for this section (${fileName})`, err));
         button.disabled = false;
         button.innerHTML = originalHtml;
     }
@@ -585,6 +694,45 @@ function clearError() {
 function showError(message: string) {
   setElementInnerHtml(errorMessage, sanitizeHtml(message));
   errorMessage.style.display = 'block';
+}
+
+function getFriendlyErrorMessage(prefix: string, error: any): string {
+    const rawMessage = [
+        typeof error === 'string' ? error : '',
+        error?.message || '',
+        (() => {
+            try {
+                return JSON.stringify(error);
+            } catch {
+                return '';
+            }
+        })()
+    ].filter(Boolean).join(' ');
+
+    const lowerMessage = rawMessage.toLowerCase();
+    const isQuotaError = rawMessage.includes('429') ||
+        rawMessage.includes('RESOURCE_EXHAUSTED') ||
+        lowerMessage.includes('quota') ||
+        lowerMessage.includes('rate limit');
+
+    if (isQuotaError) {
+        return `${prefix}: Gemini API quota or rate limit was reached. Please try again later or check the API key billing/quota settings.`;
+    }
+
+    if (lowerMessage.includes('api key') || lowerMessage.includes('permission') || lowerMessage.includes('unauthorized')) {
+        return `${prefix}: the AI service could not authenticate. Please check the Gemini API key configuration.`;
+    }
+
+    if (lowerMessage.includes('no audio data')) {
+        return `${prefix}: the AI service did not return audio data. Please try again.`;
+    }
+
+    if (lowerMessage.includes('no image') || lowerMessage.includes('did not return an image')) {
+        return `${prefix}: the AI service did not return an image. Try a simpler image prompt.`;
+    }
+
+    const compactMessage = rawMessage.replace(/\s+/g, ' ').trim();
+    return compactMessage ? `${prefix}: ${compactMessage}` : `${prefix}.`;
 }
 
 /**
@@ -718,6 +866,73 @@ function getHtmlLangCode(language: string): string {
     };
 
     return langMap[language] || 'en';
+}
+
+const APP_STATE_KEYS = {
+    lessonData: 'aistudio_lesson_generator_data',
+    topic: 'aistudio_lesson_generator_topic',
+    grade: 'aistudio_lesson_generator_grade',
+    subject: 'aistudio_lesson_generator_subject',
+    language: 'aistudio_lesson_generator_language',
+    country: 'aistudio_lesson_generator_country',
+    state: 'aistudio_lesson_generator_state',
+    specificPrompt: 'aistudio_lesson_generator_specific_prompt',
+    pages: 'aistudio_lesson_generator_pages',
+    videoLink: 'aistudio_lesson_generator_video_link'
+};
+
+function saveAppState() {
+    try {
+        if (currentLessonData) {
+            localStorage.setItem(APP_STATE_KEYS.lessonData, JSON.stringify(currentLessonData));
+        } else {
+            localStorage.removeItem(APP_STATE_KEYS.lessonData);
+        }
+
+        localStorage.setItem(APP_STATE_KEYS.topic, topicInput.value || '');
+        localStorage.setItem(APP_STATE_KEYS.grade, gradeSelect.value || '');
+        localStorage.setItem(APP_STATE_KEYS.subject, subjectSelect.value || '');
+        localStorage.setItem(APP_STATE_KEYS.language, languageSelect.value || '');
+        localStorage.setItem(APP_STATE_KEYS.country, countrySelect.value || '');
+        localStorage.setItem(APP_STATE_KEYS.state, stateInput.value || '');
+        localStorage.setItem(APP_STATE_KEYS.specificPrompt, specificPromptInput.value || '');
+        localStorage.setItem(APP_STATE_KEYS.pages, pagesInput.value || '');
+        localStorage.setItem(APP_STATE_KEYS.videoLink, videoLink.value || '');
+    } catch (error) {
+        console.error('Failed to save state to localStorage:', error);
+    }
+}
+
+function restoreInputValue(element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement, value: string | null) {
+    if (value !== null) {
+        element.value = value;
+    }
+}
+
+function loadAppState() {
+    try {
+        restoreInputValue(topicInput, localStorage.getItem(APP_STATE_KEYS.topic));
+        restoreInputValue(gradeSelect, localStorage.getItem(APP_STATE_KEYS.grade));
+        restoreInputValue(subjectSelect, localStorage.getItem(APP_STATE_KEYS.subject));
+        restoreInputValue(languageSelect, localStorage.getItem(APP_STATE_KEYS.language));
+        restoreInputValue(countrySelect, localStorage.getItem(APP_STATE_KEYS.country));
+        restoreInputValue(stateInput, localStorage.getItem(APP_STATE_KEYS.state));
+        restoreInputValue(specificPromptInput, localStorage.getItem(APP_STATE_KEYS.specificPrompt));
+        restoreInputValue(pagesInput, localStorage.getItem(APP_STATE_KEYS.pages));
+        restoreInputValue(videoLink, localStorage.getItem(APP_STATE_KEYS.videoLink));
+        pagesValue.textContent = pagesInput.value;
+
+        const savedLessonData = localStorage.getItem(APP_STATE_KEYS.lessonData);
+        if (savedLessonData) {
+            currentLessonData = normalizeLessonMathSyntax(cleanDataObject(JSON.parse(savedLessonData)));
+            renderPreview(currentLessonData!);
+            placeholder.style.display = 'none';
+            lessonPreviewContainer.style.display = 'flex';
+        }
+    } catch (error) {
+        console.error('Failed to load state from localStorage:', error);
+        localStorage.removeItem(APP_STATE_KEYS.lessonData);
+    }
 }
 
 
@@ -984,10 +1199,10 @@ async function generateLesson() {
                 }
             } catch (imgError) {
                 console.error(`Image generation failed for step ${step.step}:`, imgError);
-                const errorContent = JSON.stringify(imgError) || '';
-                if (errorContent.includes('"code":429') || errorContent.includes('RESOURCE_EXHAUSTED')) {
+                const friendlyMessage = getFriendlyErrorMessage(`Image generation failed for step ${step.step}`, imgError);
+                if (friendlyMessage.toLowerCase().includes('quota') || friendlyMessage.toLowerCase().includes('rate limit')) {
                     imageGenerationRateLimited = true;
-                    showError('Image generation limit reached. You can try regenerating individual missing images later.');
+                    showError(friendlyMessage);
                 }
             }
             
@@ -1004,10 +1219,11 @@ async function generateLesson() {
     setLoading(true, 'Finishing up...');
     renderPreview(currentLessonData!);
     lessonPreviewContainer.style.display = 'flex';
+    saveAppState();
 
   } catch (error) {
     console.error('Error generating lesson:', error);
-    showError(`An error occurred. Please try again. Details: ${error instanceof Error ? error.message : String(error)}`);
+    showError(getFriendlyErrorMessage('An error occurred during lesson generation', error));
     // Ensure other panels are hidden on error
     placeholder.style.display = 'none';
     lessonPreviewContainer.style.display = 'none';
@@ -1083,6 +1299,7 @@ function renderPreview(lesson: Lesson) {
       <i class="fa-solid fa-lightbulb"></i>
       <div class="bilingual-container">${engagingQuestionContent}</div>
   `;
+  engagingQuestionEl.appendChild(createPageAudioControls('engaging-question'));
   lessonPreview.appendChild(engagingQuestionEl);
 
   lesson.steps.forEach((step, index) => {
@@ -1129,6 +1346,7 @@ function renderPreview(lesson: Lesson) {
     const stepTitleContainer = document.createElement('h2');
     stepTitleContainer.innerHTML = titleContent;
     stepHeader.appendChild(stepTitleContainer);
+    stepHeader.appendChild(createPageAudioControls('step', step.step));
     
     stepEl.innerHTML = `
       <div class="step-controls">
@@ -1192,6 +1410,7 @@ function renderPreview(lesson: Lesson) {
   }
 
   summaryHeader.appendChild(summaryTitle);
+  summaryHeader.appendChild(createPageAudioControls('summary'));
   summaryEl.appendChild(summaryHeader);
 
   const takeawaysList = document.createElement('ul');
@@ -1281,11 +1500,13 @@ function handleTextEdit(event: Event) {
         } else {
             currentLessonData!.keyTakeaways[index] = target.innerText;
         }
+        saveAppState();
         return;
     }
 
     if (!stepAttr) { // Lesson-level field
         updateNestedValue(currentLessonData, fieldPath, value);
+        saveAppState();
         return;
     }
 
@@ -1293,6 +1514,7 @@ function handleTextEdit(event: Event) {
     if (!currentLessonData || !currentLessonData.steps[stepIndex]) return;
 
     updateNestedValue(currentLessonData.steps[stepIndex], fieldPath, value);
+    saveAppState();
 }
 
 function handleDeleteStep(indexToDelete: number) {
@@ -1312,6 +1534,7 @@ function handleDeleteStep(indexToDelete: number) {
 
     // Re-render the entire preview to reflect the deletion and re-numbering.
     renderPreview(currentLessonData);
+    saveAppState();
 }
 
 function handleDeleteTakeaway(indexToDelete: number) {
@@ -1319,6 +1542,7 @@ function handleDeleteTakeaway(indexToDelete: number) {
         if (indexToDelete >= 0 && indexToDelete < currentLessonData.keyTakeaways.length) {
             currentLessonData.keyTakeaways.splice(indexToDelete, 1);
             renderPreview(currentLessonData);
+            saveAppState();
         }
     }
 }
@@ -1339,6 +1563,7 @@ function handleMoveStep(index: number, direction: string) {
     });
 
     renderPreview(currentLessonData);
+    saveAppState();
 }
 
 
@@ -1359,12 +1584,14 @@ function handleImageReplace(event: Event) {
                 const step = currentLessonData.steps[stepIndex];
                 step.image.base64Data = compressedBase64;
                 step.image.required = true; // Ensure it's now considered required
+                step.image.fileName = `step_${step.step}.jpg`;
                 
                 // PERFORMANCE: Update only the changed image instead of re-rendering everything
                 const imageContainer = document.querySelector(`#image-container-${step.step}`);
                 if (imageContainer) {
                     renderPreviewImage(imageContainer, step);
                 }
+                saveAppState();
             }
         }
     };
@@ -1452,6 +1679,8 @@ async function handleImageEdit(event: Event) {
         // The model returns a PNG, compress it to JPEG
         const compressedBase64 = await compressImage(newRawBase64, 'image/png');
         step.image.base64Data = compressedBase64;
+        step.image.fileName = `step_${step.step}.jpg`;
+        saveAppState();
 
         // Re-render the image preview
         if (imageContainer) {
@@ -1466,7 +1695,7 @@ async function handleImageEdit(event: Event) {
 
     } catch (error) {
         console.error("Image editing failed:", error);
-        showError(`Image editing failed. ${error instanceof Error ? error.message : String(error)}`);
+        showError(getFriendlyErrorMessage("Image editing failed", error));
     } finally {
         // Re-enable controls and remove loader
         loader.remove();
@@ -1536,6 +1765,8 @@ async function handleImageRegenerate(event: Event) {
         const compressedBase64 = await compressImage(newRawBase64, 'image/png');
         step.image.base64Data = compressedBase64;
         step.image.required = true; // Make sure it's considered present
+        step.image.fileName = `step_${step.step}.jpg`;
+        saveAppState();
 
         // Re-render the image preview
         if (imageContainer) {
@@ -1550,21 +1781,13 @@ async function handleImageRegenerate(event: Event) {
 
     } catch (error) {
         console.error("Image regeneration failed:", error);
-        // Special check for rate limiting/quota errors
-        const errorContent = JSON.stringify(error) || '';
-        if (errorContent.includes('"code":429') || errorContent.includes('RESOURCE_EXHAUSTED')) {
-            showError(
-                'Image generation failed due to API quota limits. ' +
-                'Please check your API key plan and billing details or try again later.'
-            );
-        } else {
-            showError(`Image regeneration failed. ${error instanceof Error ? error.message : String(error)}`);
-        }
+        showError(getFriendlyErrorMessage("Image regeneration failed", error));
         // If generation fails, we should clear the base64 data to show the placeholder again
         step.image.base64Data = '';
         if (imageContainer) {
             renderPreviewImage(imageContainer, step);
         }
+        saveAppState();
 
     } finally {
         // Re-enable controls and remove loader
@@ -1795,7 +2018,7 @@ async function createAndDownloadZip() {
     URL.revokeObjectURL(url);
   } catch (error) {
     console.error("Failed to create ZIP:", error);
-    showError("Could not create the lesson package. Please try again.");
+    showError(getFriendlyErrorMessage("Could not create the lesson package", error));
   } finally {
     // Restore the button after a short delay
     setTimeout(() => {
@@ -2305,6 +2528,26 @@ lessonPreview.addEventListener('click', (event) => {
 // Update page count display when slider is moved
 pagesInput.addEventListener('input', () => {
     pagesValue.textContent = pagesInput.value;
+    saveAppState();
 });
+
+const inputsToSave = [
+    topicInput,
+    gradeSelect,
+    subjectSelect,
+    languageSelect,
+    countrySelect,
+    stateInput,
+    specificPromptInput,
+    pagesInput,
+    videoLink
+];
+
+inputsToSave.forEach(input => {
+    input.addEventListener('input', saveAppState);
+    input.addEventListener('change', saveAppState);
+});
+
+loadAppState();
 
 export {};

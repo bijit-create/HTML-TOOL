@@ -807,7 +807,7 @@ button#generate-btn:disabled {
     flex-shrink: 0;
 }
 
-.audio-btn, .audio-download-btn {
+.audio-btn, .audio-update-btn, .audio-download-btn {
     background: none;
     border: 1px solid var(--border-color);
     border-radius: 50%;
@@ -822,13 +822,13 @@ button#generate-btn:disabled {
     flex-shrink: 0;
 }
 
-.audio-btn:hover, .audio-download-btn:hover {
+.audio-btn:hover, .audio-update-btn:hover, .audio-download-btn:hover {
     background-color: var(--accent-color);
     border-color: var(--accent-color);
     color: white;
 }
 
-.audio-btn.loading, .audio-btn.playing {
+.audio-btn.loading, .audio-btn.playing, .audio-update-btn.loading {
     background-color: var(--accent-color);
     border-color: var(--accent-color);
     color: white;
@@ -838,7 +838,7 @@ button#generate-btn:disabled {
     transform: scale(0.9);
 }
 
-.audio-btn .fa-spinner {
+.audio-btn .fa-spinner, .audio-update-btn .fa-spinner {
     animation: spin 1s linear infinite;
 }
 
