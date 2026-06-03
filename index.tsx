@@ -2158,7 +2158,7 @@ function getLessonScript(lessonJsonString: string) {
         if (!GENERATED_INDIC_TEXT_REGEX.test(mathContent)) return mathContent;
 
         const protectedTextCommands = [];
-        let normalized = mathContent.replace(/\\(?:text|mbox|mathrm)\\{[^{}]*\\}/g, function(match) {
+        let normalized = mathContent.replace(/\\\\(?:text|mbox|mathrm)\\{[^{}]*\\}/g, function(match) {
             const index = protectedTextCommands.push(match) - 1;
             return '@@TEXT_CMD_' + index + '@@';
         });
