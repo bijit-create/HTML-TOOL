@@ -891,11 +891,32 @@ button#generate-btn:disabled {
 .bilingual-wrapper > [contenteditable="true"] {
     flex-grow: 1;
 }
+.bilingual-wrapper > [contenteditable="true"].auto-translation-pending {
+    border-color: var(--button-color);
+}
+.bilingual-wrapper > [contenteditable="true"].auto-translating {
+    border-color: var(--accent-color);
+    background-image: linear-gradient(90deg, rgba(56, 106, 246, 0.08), rgba(252, 183, 23, 0.12), rgba(56, 106, 246, 0.08));
+    background-size: 200% 100%;
+    animation: translationPulse 1.4s linear infinite;
+}
+.bilingual-wrapper > [contenteditable="true"].auto-translation-error {
+    border-color: var(--error-color);
+}
 .step-header h2 {
     flex-grow: 1;
 }
 .step-header h2 .bilingual-field {
     gap: 0.25rem;
+}
+
+@keyframes translationPulse {
+    from {
+        background-position: 200% 0;
+    }
+    to {
+        background-position: -200% 0;
+    }
 }
 
 /* --- Interactive Question Styles --- */

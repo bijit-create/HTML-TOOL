@@ -138,6 +138,11 @@ const generateBtnText = generateBtn.querySelector('.btn-text') as HTMLSpanElemen
 let currentLessonData: Lesson | null = null;
 let ai: GoogleGenAI;
 
+// --- AUTO TRANSLATION STATE ---
+const AUTO_TRANSLATE_DEBOUNCE_MS = 900;
+const autoTranslationTimers = new Map<string, number>();
+const autoTranslationVersions = new Map<string, number>();
+
 // --- AUDIO STATE ---
 const audioCache = new Map<string, AudioBuffer>();
 let currentAudioSource: AudioBufferSourceNode | null = null;
@@ -735,6 +740,196 @@ function getFriendlyErrorMessage(prefix: string, error: any): string {
 
     const compactMessage = rawMessage.replace(/\s+/g, ' ').trim();
     return compactMessage ? `${prefix}: ${compactMessage}` : `${prefix}.`;
+}
+
+function updateNestedValue(obj: any, path: string, newValue: any, lang?: keyof BilingualText) {
+    const fields = path.split('.');
+    let current = obj;
+    for (let i = 0; i < fields.length - 1; i++) {
+        if (current[fields[i]] === undefined) return;
+        current = current[fields[i]];
+    }
+
+    const finalField = fields[fields.length - 1];
+    if (lang) {
+        if (typeof current[finalField] !== 'object' || current[finalField] === null) {
+            current[finalField] = { en: '', targetLang: '' };
+        }
+        current[finalField][lang] = newValue;
+        return;
+    }
+
+    current[finalField] = newValue;
+}
+
+function getAutoTranslationKey(fieldPath: string, stepAttr?: string, indexAttr?: string): string {
+    return [fieldPath, stepAttr || 'lesson', indexAttr || 'single'].join(':');
+}
+
+function getTargetLanguageEditor(sourceElement: HTMLElement): HTMLElement | null {
+    return sourceElement
+        .closest('.bilingual-field')
+        ?.querySelector('[contenteditable="true"][data-lang="targetLang"]') as HTMLElement | null;
+}
+
+function setTargetLanguageText(
+    fieldPath: string,
+    translatedText: string,
+    stepAttr?: string,
+    indexAttr?: string
+) {
+    if (!currentLessonData) return;
+
+    if (fieldPath === 'keyTakeaways' && indexAttr) {
+        const index = parseInt(indexAttr, 10);
+        const takeaway = currentLessonData.keyTakeaways[index];
+        if (typeof takeaway === 'object' && takeaway !== null) {
+            takeaway.targetLang = translatedText;
+        } else {
+            currentLessonData.keyTakeaways[index] = {
+                en: typeof takeaway === 'string' ? takeaway : '',
+                targetLang: translatedText
+            };
+        }
+        return;
+    }
+
+    if (stepAttr) {
+        const stepIndex = parseInt(stepAttr, 10) - 1;
+        if (!currentLessonData.steps[stepIndex]) return;
+        updateNestedValue(currentLessonData.steps[stepIndex], fieldPath, translatedText, 'targetLang');
+        return;
+    }
+
+    updateNestedValue(currentLessonData, fieldPath, translatedText, 'targetLang');
+}
+
+function cancelPendingAutoTranslation(fieldPath: string, stepAttr?: string, indexAttr?: string, targetElement?: HTMLElement) {
+    const key = getAutoTranslationKey(fieldPath, stepAttr, indexAttr);
+    const timer = autoTranslationTimers.get(key);
+    if (timer) {
+        window.clearTimeout(timer);
+        autoTranslationTimers.delete(key);
+    }
+
+    autoTranslationVersions.set(key, (autoTranslationVersions.get(key) || 0) + 1);
+    targetElement?.classList.remove('auto-translation-pending', 'auto-translating', 'auto-translation-error');
+    targetElement?.removeAttribute('aria-busy');
+}
+
+async function translateEditedEnglishText(sourceText: string, targetLanguage: string, preserveHtml: boolean): Promise<string> {
+    const formatInstruction = preserveHtml
+        ? `The input may contain HTML produced from markdown, KaTeX math markup, key-term spans, and LaTeX delimiters. Translate only the human-readable English lesson text into ${targetLanguage}. Preserve HTML tags, attributes, tag nesting, KaTeX markup, LaTeX math, numbers, variables, URLs, and image/file references exactly.`
+        : `Translate the plain English lesson text into ${targetLanguage}. Preserve LaTeX math, numbers, variables, URLs, and punctuation structure where appropriate.`;
+
+    const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: {
+            parts: [{
+                text: `You are updating one edited lesson field. ${formatInstruction}
+Return JSON only with this shape: {"translatedText":"..."}.
+Do not add explanations, labels, markdown fences, or extra keys.
+
+English source:
+${sourceText}`
+            }]
+        },
+        config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    translatedText: { type: Type.STRING }
+                },
+                required: ['translatedText']
+            }
+        }
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    const translatedText = cleanDataObject(parsed.translatedText || '');
+    if (typeof translatedText !== 'string') {
+        throw new Error('The AI returned an invalid translation response.');
+    }
+
+    return normalizeMultilingualLatex(translatedText);
+}
+
+function applyAutoTranslationResult(
+    targetElement: HTMLElement | null,
+    translatedText: string,
+    preserveHtml: boolean,
+    fieldPath: string,
+    stepAttr?: string,
+    indexAttr?: string
+) {
+    setTargetLanguageText(fieldPath, translatedText, stepAttr, indexAttr);
+
+    if (targetElement?.isConnected) {
+        if (preserveHtml) {
+            targetElement.innerHTML = translatedText;
+        } else {
+            targetElement.textContent = translatedText;
+        }
+        targetElement.classList.remove('auto-translation-pending', 'auto-translating', 'auto-translation-error');
+        targetElement.removeAttribute('aria-busy');
+    }
+
+    saveAppState();
+}
+
+function scheduleAutoTranslationFromEnglishEdit(
+    sourceElement: HTMLElement,
+    fieldPath: string,
+    stepAttr?: string,
+    indexAttr?: string
+) {
+    if (!ai || languageSelect.value === 'English') return;
+
+    const key = getAutoTranslationKey(fieldPath, stepAttr, indexAttr);
+    const preserveHtml = fieldPath !== 'keyTakeaways';
+    const sourceText = preserveHtml ? sourceElement.innerHTML : sourceElement.innerText;
+    const targetElement = getTargetLanguageEditor(sourceElement);
+    const version = (autoTranslationVersions.get(key) || 0) + 1;
+
+    const existingTimer = autoTranslationTimers.get(key);
+    if (existingTimer) {
+        window.clearTimeout(existingTimer);
+    }
+
+    autoTranslationVersions.set(key, version);
+    targetElement?.classList.remove('auto-translating', 'auto-translation-error');
+    targetElement?.classList.add('auto-translation-pending');
+
+    if (!stripHtmlToText(sourceText).trim()) {
+        autoTranslationTimers.delete(key);
+        applyAutoTranslationResult(targetElement, '', preserveHtml, fieldPath, stepAttr, indexAttr);
+        return;
+    }
+
+    const timer = window.setTimeout(async () => {
+        autoTranslationTimers.delete(key);
+        targetElement?.classList.remove('auto-translation-pending');
+        targetElement?.classList.add('auto-translating');
+        targetElement?.setAttribute('aria-busy', 'true');
+
+        try {
+            const translatedText = await translateEditedEnglishText(sourceText, languageSelect.value, preserveHtml);
+            if (autoTranslationVersions.get(key) !== version) return;
+
+            applyAutoTranslationResult(targetElement, translatedText, preserveHtml, fieldPath, stepAttr, indexAttr);
+        } catch (error) {
+            if (autoTranslationVersions.get(key) !== version) return;
+
+            console.error('Auto translation failed:', error);
+            targetElement?.classList.remove('auto-translation-pending', 'auto-translating');
+            targetElement?.classList.add('auto-translation-error');
+            targetElement?.removeAttribute('aria-busy');
+            showError(getFriendlyErrorMessage('Translation update failed', error));
+        }
+    }, AUTO_TRANSLATE_DEBOUNCE_MS);
+
+    autoTranslationTimers.set(key, timer);
 }
 
 /**
@@ -1471,6 +1666,8 @@ function handleTextEdit(event: Event) {
     const stepAttr = target.dataset.step;
     const indexAttr = target.dataset.index;
     const lang = target.dataset.lang; // For bilingual fields
+    const shouldAutoTranslate = lang === 'en' && languageSelect.value !== 'English' && fieldPath !== 'image.prompt';
+    const shouldCancelAutoTranslation = lang === 'targetLang';
 
     if (stepAttr) {
         audioCache.delete(`step-${parseInt(stepAttr, 10)}-full-audio`);
@@ -1479,21 +1676,6 @@ function handleTextEdit(event: Event) {
     }
 
     const value = target.innerHTML; // Always use innerHTML for rich text
-
-    const updateNestedValue = (obj: any, path: string, newValue: any) => {
-        const fields = path.split('.');
-        let current = obj;
-        for (let i = 0; i < fields.length - 1; i++) {
-            if (current[fields[i]] === undefined) return; // Path broken
-            current = current[fields[i]];
-        }
-        const finalField = fields[fields.length - 1];
-        if (lang && typeof current[finalField] === 'object') {
-            current[finalField][lang] = newValue;
-        } else {
-            current[finalField] = newValue;
-        }
-    };
 
     if (fieldPath === 'keyTakeaways' && indexAttr) {
         audioCache.delete('summary-full-audio');
@@ -1504,12 +1686,22 @@ function handleTextEdit(event: Event) {
         } else {
             currentLessonData!.keyTakeaways[index] = target.innerText;
         }
+        if (shouldCancelAutoTranslation) {
+            cancelPendingAutoTranslation(fieldPath, stepAttr, indexAttr, target);
+        } else if (shouldAutoTranslate) {
+            scheduleAutoTranslationFromEnglishEdit(target, fieldPath, stepAttr, indexAttr);
+        }
         saveAppState();
         return;
     }
 
     if (!stepAttr) { // Lesson-level field
-        updateNestedValue(currentLessonData, fieldPath, value);
+        updateNestedValue(currentLessonData, fieldPath, value, lang as keyof BilingualText | undefined);
+        if (shouldCancelAutoTranslation) {
+            cancelPendingAutoTranslation(fieldPath, stepAttr, indexAttr, target);
+        } else if (shouldAutoTranslate) {
+            scheduleAutoTranslationFromEnglishEdit(target, fieldPath, stepAttr, indexAttr);
+        }
         saveAppState();
         return;
     }
@@ -1517,7 +1709,12 @@ function handleTextEdit(event: Event) {
     const stepIndex = parseInt(stepAttr, 10) - 1;
     if (!currentLessonData || !currentLessonData.steps[stepIndex]) return;
 
-    updateNestedValue(currentLessonData.steps[stepIndex], fieldPath, value);
+    updateNestedValue(currentLessonData.steps[stepIndex], fieldPath, value, lang as keyof BilingualText | undefined);
+    if (shouldCancelAutoTranslation) {
+        cancelPendingAutoTranslation(fieldPath, stepAttr, indexAttr, target);
+    } else if (shouldAutoTranslate) {
+        scheduleAutoTranslationFromEnglishEdit(target, fieldPath, stepAttr, indexAttr);
+    }
     saveAppState();
 }
 
