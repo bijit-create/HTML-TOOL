@@ -19,8 +19,46 @@ const md = new MarkdownIt({
 }).use(texmath, {
     engine: katex,
     delimiters: 'dollars',
-    katexOptions: { macros: { "\\RR": "\\mathbb{R}" } }
+    katexOptions: {
+        macros: { "\\RR": "\\mathbb{R}" },
+        strict: false
+    }
 });
+
+const INDIC_CHAR_RANGES = '\\u0900-\\u097F\\u0980-\\u09FF\\u0A80-\\u0AFF\\u0C00-\\u0C7F';
+const INDIC_TEXT_REGEX = new RegExp(`[${INDIC_CHAR_RANGES}]`);
+
+function wrapIndicTextInLatex(mathContent: string): string {
+    if (!INDIC_TEXT_REGEX.test(mathContent)) return mathContent;
+
+    const protectedTextCommands: string[] = [];
+    let normalized = mathContent.replace(/\\(?:text|mbox|mathrm)\{[^{}]*\}/g, (match) => {
+        const index = protectedTextCommands.push(match) - 1;
+        return `@@TEXT_CMD_${index}@@`;
+    });
+
+    const indicInBraceGroup = new RegExp(`\\{([^{}]*[${INDIC_CHAR_RANGES}][^{}]*)\\}`, 'g');
+    normalized = normalized.replace(indicInBraceGroup, (match, group: string) => {
+        if (group.includes('\\')) return match;
+        const trimmed = group.trim();
+        return trimmed ? `{\\text{${trimmed}}}` : match;
+    });
+
+    const indicTextNearOperator = new RegExp(`(^|[=+\\-*/^_(),:;])\\s*([${INDIC_CHAR_RANGES}][${INDIC_CHAR_RANGES}\\s\\u200c\\u200d\\u0964.,'"!?-]*[${INDIC_CHAR_RANGES}])(?=\\s*($|[=+\\-*/^_(),:;]))`, 'g');
+    normalized = normalized.replace(indicTextNearOperator, (match, prefix: string, phrase: string) => {
+        const trimmed = phrase.trim();
+        return trimmed ? `${prefix}\\text{${trimmed}}` : match;
+    });
+
+    return normalized.replace(/@@TEXT_CMD_(\d+)@@/g, (_, index) => protectedTextCommands[Number(index)] ?? '');
+}
+
+function normalizeMultilingualLatex(text: string): string {
+    if (!text || !INDIC_TEXT_REGEX.test(text) || !text.includes('$')) return text;
+    return text.replace(/(\$\$?)([\s\S]*?)\1/g, (match, delimiter: string, mathContent: string) => {
+        return `${delimiter}${wrapIndicTextInLatex(mathContent)}${delimiter}`;
+    });
+}
 
 // --- DATA STRUCTURES ---
 
@@ -272,9 +310,9 @@ async function handlePageAudioButtonClick(event: Event) {
         const step = currentLessonData!.steps[parseInt(stepNum, 10) - 1];
         const title = getText(step.title);
         const explanation = getText(step.explanation);
-        const question = getText(step.interactiveQuestion.question);
+        const hint = getText(step.nextStepHint);
         
-        combinedText = [title, explanation, question].filter(Boolean).join('. ');
+        combinedText = [title, explanation, hint].filter(Boolean).join('. ');
         cacheKey = `step-${stepNum}-full-audio`;
     } else if (scope === 'summary') {
         const summaryTitleText = getText(currentLessonData!.uiTranslations.lessonSummary);
@@ -390,6 +428,8 @@ function updateUiWithFailedAudioLinks(failedIds: string[]) {
         if (id.startsWith('step-')) {
             scope = 'step';
             stepNum = id.split('-')[1];
+        } else if (id.startsWith('summary-')) {
+            scope = 'summary';
         } else {
             scope = id;
         }
@@ -445,10 +485,13 @@ async function handleIndividualAudioDownload(event: Event) {
         
         tempDiv.innerHTML = getText(step.explanation);
         const cleanExplanation = tempDiv.innerText;
+        tempDiv.innerHTML = getText(step.nextStepHint);
+        const cleanHint = tempDiv.innerText;
 
         textToSpeak = [
             getText(step.title),
-            cleanExplanation
+            cleanExplanation,
+            cleanHint
         ].filter(Boolean).join('. ');
         fileName = `step-${stepNum}.wav`;
     } else if (scope === 'summary') {
@@ -624,6 +667,57 @@ function cleanDataObject(data: any): any {
         return newData;
     }
     return data;
+}
+
+function normalizeLessonMathSyntax<T>(data: T): T {
+    if (typeof data === 'string') {
+        return normalizeMultilingualLatex(data) as T;
+    }
+    if (Array.isArray(data)) {
+        return data.map(normalizeLessonMathSyntax) as T;
+    }
+    if (typeof data === 'object' && data !== null) {
+        const normalizedData: { [key: string]: any } = {};
+        for (const key in data) {
+            if (Object.prototype.hasOwnProperty.call(data, key)) {
+                normalizedData[key] = normalizeLessonMathSyntax((data as any)[key]);
+            }
+        }
+        return normalizedData as T;
+    }
+    return data;
+}
+
+function getTextValue(data: any): string {
+    if (typeof data === 'string') return data;
+    if (data && typeof data === 'object') {
+        return data.targetLang || data.en || '';
+    }
+    return '';
+}
+
+function toSafeAsciiFileName(input: string, fallback = 'lesson'): string {
+    const safeName = input
+        .normalize('NFKD')
+        .replace(/[^\x00-\x7F]/g, '')
+        .replace(/[^A-Za-z0-9._-]+/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^[_ .-]+|[_ .-]+$/g, '')
+        .slice(0, 80);
+
+    return safeName || fallback;
+}
+
+function getHtmlLangCode(language: string): string {
+    const langMap: Record<string, string> = {
+        English: 'en',
+        Hindi: 'hi',
+        Marathi: 'mr',
+        Gujarati: 'gu',
+        Telugu: 'te'
+    };
+
+    return langMap[language] || 'en';
 }
 
 
@@ -821,7 +915,7 @@ async function generateLesson() {
 
     // FIX: Clean the entire lesson object from the API to remove unwanted entities like &nbsp;
     // This ensures both the preview and the downloaded file have clean data.
-    currentLessonData = cleanDataObject(JSON.parse(response.text));
+    currentLessonData = normalizeLessonMathSyntax(cleanDataObject(JSON.parse(response.text)));
 
     // FIX: Check for empty or invalid lesson data to prevent blank screen
     if (!currentLessonData || !currentLessonData.steps || currentLessonData.steps.length === 0) {
@@ -969,7 +1063,7 @@ function renderPreview(lesson: Lesson) {
   const renderContent = (data: string | BilingualText): string | BilingualText => {
       const process = (text: string) => {
           if (!text) return '';
-          return md.render(text).trim();
+          return md.render(normalizeMultilingualLatex(text)).trim();
       };
       if (typeof data === 'object') {
           return { en: process(data.en), targetLang: process(data.targetLang) };
@@ -999,7 +1093,7 @@ function renderPreview(lesson: Lesson) {
         const process = (text: string) => {
             if (!text) return '';
             // First render with markdown-it which handles LaTeX via the plugin
-            let rendered = md.render(text);
+            let rendered = md.render(normalizeMultilingualLatex(text));
             // Then apply the custom key-term highlighting
             rendered = rendered.replace(/\|\|\|(.*?)\|\|\|/g, '<strong class="key-term">$1</strong>');
             return rendered;
@@ -1577,17 +1671,23 @@ async function createAndDownloadZip() {
     const zip = new JSZip();
     const imageFolder = zip.folder("images");
     const audioFolder = zip.folder("audio");
+    const packagedImageFileNames = new Set<string>();
 
     // Add images to zip
     for (const step of currentLessonData.steps) {
       if (step.image.base64Data && step.image.fileName) {
         imageFolder!.file(step.image.fileName, step.image.base64Data, { base64: true });
+        packagedImageFileNames.add(step.image.fileName);
       }
     }
 
     // --- Generate one audio file per page ---
     const audioTasks: { id: string; text: string }[] = [];
     const tempDiv = document.createElement('div');
+    const getPlainTextForAudio = (text: string): string => {
+        tempDiv.innerHTML = text;
+        return tempDiv.innerText || text;
+    };
     const getTextForAudio = (data: string | BilingualText): string => {
         if (typeof data === 'string') {
             return data;
@@ -1607,13 +1707,14 @@ async function createAndDownloadZip() {
         audioTasks.push({ id: 'engaging-question', text: `${titleText}. ${questionText}` });
     }
     currentLessonData.steps.forEach(step => {
-        // Strip HTML from explanation for audio generation
-        tempDiv.innerHTML = getTextForAudio(step.explanation);
-        const cleanExplanation = tempDiv.innerText;
+        const cleanTitle = getPlainTextForAudio(getTextForAudio(step.title));
+        const cleanExplanation = getPlainTextForAudio(getTextForAudio(step.explanation));
+        const cleanHint = getPlainTextForAudio(getTextForAudio(step.nextStepHint));
 
         const combinedText = [
-            getTextForAudio(step.title),
-            cleanExplanation
+            cleanTitle,
+            cleanExplanation,
+            cleanHint
         ].filter(text => text && text.trim().length > 0).join('. ');
 
         if (combinedText) {
@@ -1647,6 +1748,7 @@ async function createAndDownloadZip() {
 
     let generatedCount = 0;
     const failedAudioTasks: string[] = [];
+    const successfulAudioTasks: { id: string }[] = [];
 
     for (const task of audioTasks) {
         generatedCount++;
@@ -1659,6 +1761,7 @@ async function createAndDownloadZip() {
                 const pcmData = decode(base64Audio);
                 const wavBlob = createWavFileBlob(pcmData, 24000);
                 audioFolder!.file(`${task.id}.wav`, wavBlob);
+                successfulAudioTasks.push({ id: task.id });
             } else {
                 throw new Error("API returned no audio data.");
             }
@@ -1676,7 +1779,7 @@ async function createAndDownloadZip() {
     `;
 
     // Add HTML file
-    const htmlContent = generateLessonHtml(lessonForExport, audioTasks);
+    const htmlContent = generateLessonHtml(lessonForExport, successfulAudioTasks, packagedImageFileNames);
     zip.file("index.html", htmlContent);
     
     // Generate and download zip
@@ -1684,7 +1787,8 @@ async function createAndDownloadZip() {
     const url = URL.createObjectURL(zipBlob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${String(lessonForExport.title).replace(/ /g, '_')}_lesson.zip`;
+    const downloadBaseName = toSafeAsciiFileName(getTextValue(lessonForExport.title), 'lesson');
+    a.download = `${downloadBaseName}_lesson.zip`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1822,6 +1926,58 @@ function getLessonScript(lessonJsonString: string) {
     const appContainer = document.getElementById('app');
     const startBtn = document.getElementById('start-btn');
     let currentAudio = null;
+    let completionTimer = null;
+
+    const GENERATED_INDIC_CHAR_RANGES = '\\u0900-\\u097F\\u0980-\\u09FF\\u0A80-\\u0AFF\\u0C00-\\u0C7F';
+    const GENERATED_INDIC_TEXT_REGEX = new RegExp('[' + GENERATED_INDIC_CHAR_RANGES + ']');
+
+    function wrapIndicTextInLatex(mathContent) {
+        if (!GENERATED_INDIC_TEXT_REGEX.test(mathContent)) return mathContent;
+
+        const protectedTextCommands = [];
+        let normalized = mathContent.replace(/\\(?:text|mbox|mathrm)\\{[^{}]*\\}/g, function(match) {
+            const index = protectedTextCommands.push(match) - 1;
+            return '@@TEXT_CMD_' + index + '@@';
+        });
+
+        const indicInBraceGroup = new RegExp('\\\\{([^{}]*[' + GENERATED_INDIC_CHAR_RANGES + '][^{}]*)\\\\}', 'g');
+        normalized = normalized.replace(indicInBraceGroup, function(match, group) {
+            if (group.indexOf('\\\\') !== -1) return match;
+            const trimmed = group.trim();
+            return trimmed ? '{\\\\text{' + trimmed + '}}' : match;
+        });
+
+        const indicTextNearOperator = new RegExp('(^|[=+\\\\-*/^_(),:;])\\\\s*([' + GENERATED_INDIC_CHAR_RANGES + '][' + GENERATED_INDIC_CHAR_RANGES + '\\\\s\\\\u200c\\\\u200d\\\\u0964.,\\'"!?-]*[' + GENERATED_INDIC_CHAR_RANGES + '])(?=\\\\s*($|[=+\\\\-*/^_(),:;]))', 'g');
+        normalized = normalized.replace(indicTextNearOperator, function(match, prefix, phrase) {
+            const trimmed = phrase.trim();
+            return trimmed ? prefix + '\\\\text{' + trimmed + '}' : match;
+        });
+
+        return normalized.replace(/@@TEXT_CMD_(\\d+)@@/g, function(_, index) {
+            return protectedTextCommands[Number(index)] || '';
+        });
+    }
+
+    function normalizeMultilingualLatex(text) {
+        if (!text || !GENERATED_INDIC_TEXT_REGEX.test(text) || text.indexOf('$') === -1) return text;
+        return text.replace(/(\\$\\$?)([\\s\\S]*?)\\1/g, function(match, delimiter, mathContent) {
+            return delimiter + wrapIndicTextInLatex(mathContent) + delimiter;
+        });
+    }
+
+    function renderFormattedText(value) {
+        return normalizeMultilingualLatex(String(value || ''))
+            .replace(/\\|\\|\\|(.*?)\\|\\|\\|/g, '<strong class="key-term">$1</strong>')
+            .replace(/\\n/g, '<br>');
+    }
+
+    function typesetMath() {
+        if (window.MathJax && window.MathJax.typesetPromise) {
+            window.MathJax.typesetPromise([contentEl]).catch(function(error) {
+                console.log('MathJax typeset failed:', error);
+            });
+        }
+    }
 
     const floatingBackBtn = document.createElement('button');
     floatingBackBtn.className = 'floating-back-btn';
@@ -1831,6 +1987,10 @@ function getLessonScript(lessonJsonString: string) {
     floatingBackBtn.onclick = goToPreviousStep;
 
     function stopAllAudio() {
+        if (completionTimer) {
+            clearTimeout(completionTimer);
+            completionTimer = null;
+        }
         if (currentAudio) {
             currentAudio.pause();
             currentAudio.currentTime = 0;
@@ -1842,14 +2002,40 @@ function getLessonScript(lessonJsonString: string) {
         });
     }
 
+    function handleAudioComplete(id) {
+        if (completionTimer) clearTimeout(completionTimer);
+        completionTimer = setTimeout(function() {
+            completionTimer = null;
+            if (id === 'player-engaging-question') {
+                startLesson();
+            } else if (id.startsWith('player-step-')) {
+                goToNextStep();
+            } else if (id.startsWith('player-summary-')) {
+                goToNextStep();
+            }
+        }, 2000);
+    }
+
     function playAudio(id) {
-        console.log("Playing audio:", id);
+        console.log('Playing audio:', id);
         stopAllAudio();
         const player = document.getElementById(id);
-        if (player) {
-            player.play().catch(e => console.log("Audio play blocked (expected for auto-play without interaction):", id, e));
-            currentAudio = player;
+        if (!player) {
+            console.log('Missing audio file, continuing without it:', id);
+            handleAudioComplete(id);
+            return false;
         }
+
+        player.currentTime = 0;
+        currentAudio = player;
+        const playPromise = player.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch(function(error) {
+                console.log('Audio playback failed, continuing without it:', id, error);
+                handleAudioComplete(id);
+            });
+        }
+        return true;
     }
 
     function goToPreviousStep() {
@@ -1900,21 +2086,22 @@ function getLessonScript(lessonJsonString: string) {
 
         const imageHtml = step.image.base64Data ? \`<img src="\${step.image.base64Data}" alt="\${step.image.prompt}">\`
             : (step.image.required ? \`<div class="image-placeholder"><strong>Image Placeholder</strong><p><strong>Prompt:</strong> \${step.image.prompt}</p></div>\` : '');
-        const explanationHtml = (step.explanation || '').replace(/\\|\\|\\|(.*?)\\|\\|\\|/g, '<strong class="key-term">$1</strong>').replace(/\\n/g, '<br>');
-        const nextStepHintHtml = step.nextStepHint ? \`<div class="next-step-hint"><i class="fa-solid fa-arrow-right-long"></i> <p>\${step.nextStepHint}</p></div>\` : '';
+        const explanationHtml = renderFormattedText(step.explanation);
+        const nextStepHintHtml = step.nextStepHint ? \`<div class="next-step-hint"><i class="fa-solid fa-arrow-right-long"></i> <p>\${renderFormattedText(step.nextStepHint)}</p></div>\` : '';
         
         contentEl.innerHTML = \`
             <div class="step-view active">
                 <div class="step-image-container">\${imageHtml}</div>
                 <div class="step-content-container">
                     <div>
-                        <h2>\${step.title}</h2>
+                        <h2>\${renderFormattedText(step.title)}</h2>
                         <div>\${explanationHtml}</div>
                         \${nextStepHintHtml}
                     </div>
                 </div>
             </div>\`;
         
+        typesetMath();
         playAudio(\`player-step-\${step.step}\`);
     }
 
@@ -1934,17 +2121,8 @@ function getLessonScript(lessonJsonString: string) {
     // Auto-advance logic
     const players = document.querySelectorAll('audio');
     players.forEach(p => {
-        p.onended = () => {
-            setTimeout(() => {
-                if (p.id === 'player-engaging-question') {
-                    startLesson();
-                } else if (p.id.startsWith('player-step-')) {
-                    goToNextStep();
-                } else if (p.id.startsWith('player-summary-')) {
-                    goToNextStep();
-                }
-            }, 2000);
-        };
+        p.onended = () => handleAudioComplete(p.id);
+        p.onerror = () => handleAudioComplete(p.id);
     });
 
     function renderSummaryScreen() {
@@ -1953,9 +2131,9 @@ function getLessonScript(lessonJsonString: string) {
         
         const startIndex = currentSummaryPage * SUMMARY_PAGE_SIZE;
         const pageTakes = lessonData.keyTakeaways.slice(startIndex, startIndex + SUMMARY_PAGE_SIZE);
-        const takesHtml = pageTakes.map(t => '<li>' + t + '</li>').join('');
+        const takesHtml = pageTakes.map(t => '<li>' + renderFormattedText(t) + '</li>').join('');
         
-        const title = ui.lessonSummary || 'Summary';
+        const title = renderFormattedText(ui.lessonSummary || 'Summary');
         const buttonText = (currentSummaryPage < totalPages - 1) ? (ui.next || 'Next') : (ui.finishLesson || 'Finish');
         
         const pageIndicator = totalPages > 1 ? '<div style="font-size: 0.9rem; color: #999; margin-top: 1rem;">Page ' + (currentSummaryPage + 1) + ' of ' + totalPages + '</div>' : '';
@@ -1973,6 +2151,7 @@ function getLessonScript(lessonJsonString: string) {
             </div>\`;
         
         document.getElementById('summary-next-btn').onclick = goToNextStep;
+        typesetMath();
         playAudio('player-summary-' + (currentSummaryPage + 1));
     }
 
@@ -2004,8 +2183,9 @@ function getLessonScript(lessonJsonString: string) {
                     </svg>
                 </div>
                 <h2>Congratulations!</h2>
-                <p>You have completed the lesson: <strong>\${lessonData.title}</strong></p>
+                <p>You have completed the lesson: <strong>\${renderFormattedText(lessonData.title)}</strong></p>
             </div>\`;
+        typesetMath();
     }
 
     // Removed automatic audio initialization to favor button click trigger
@@ -2014,16 +2194,20 @@ function getLessonScript(lessonJsonString: string) {
 }
 
 
-function generateLessonHtml(lesson: Lesson, audioTasks: { id: string }[]): string {
+function generateLessonHtml(
+  lesson: Lesson,
+  audioTasks: { id: string }[],
+  packagedImageFileNames: Set<string> = new Set()
+): string {
   // FIX: The `lesson` object passed here has been processed to be monolingual
   // (all BilingualText fields are strings). Cast to `any` to reflect this
   // and prevent type errors and bugs where an object might be rendered as text.
-  const monolingualLesson = lesson as any;
+  const monolingualLesson = normalizeLessonMathSyntax(lesson as any);
 
   const lessonForHtml = JSON.parse(JSON.stringify(monolingualLesson));
   // Replace base64 with relative paths for the final HTML
   lessonForHtml.steps.forEach((step: LessonStep) => {
-    step.image.base64Data = (step.image.base64Data && step.image.fileName) 
+    step.image.base64Data = (step.image.fileName && packagedImageFileNames.has(step.image.fileName))
         ? `images/${step.image.fileName}` 
         : '';
   });
@@ -2039,14 +2223,30 @@ function generateLessonHtml(lesson: Lesson, audioTasks: { id: string }[]): strin
   const engagingQuestionAudioBtn = `<button class="audio-player-btn" data-player-id="player-engaging-question" title="Read Aloud" style="display:none;"><i class="fa-solid fa-volume-high"></i></button>`;
   const ui = monolingualLesson.uiTranslations || {};
   const letsExploreText = ui.letsExplore || "Let's Explore!";
+  const documentLang = getHtmlLangCode(languageSelect.value);
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="${documentLang}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${monolingualLesson.title}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$']],
+                displayMath: [['$$', '$$']]
+            },
+            chtml: {
+                mtextInheritFont: true
+            },
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+            }
+        };
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
     <style>${getLessonCss()}</style>
 </head>
 <body>
