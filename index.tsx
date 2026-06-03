@@ -82,6 +82,8 @@ interface UiTranslations {
   summary: string | BilingualText;
   page: string | BilingualText;
   done: string | BilingualText;
+  completionTitle?: string | BilingualText;
+  completionMessage?: string | BilingualText;
 }
 
 
@@ -1008,8 +1010,10 @@ async function generateLesson() {
             page: textSchema,
             done: textSchema,
             next: textSchema,
+            completionTitle: textSchemaWithDesc("Short completion screen heading, translated naturally. Example: Congratulations!"),
+            completionMessage: textSchemaWithDesc("Completion screen message before the lesson title, translated naturally. Example: You have completed the lesson:")
         },
-        required: ["lessonSummary", "keyTakeaways", "finishLesson", "letsExplore", "back"]
+        required: ["lessonSummary", "keyTakeaways", "finishLesson", "letsExplore", "back", "completionTitle", "completionMessage"]
     };
 
     const lessonSchema = {
@@ -1115,7 +1119,7 @@ async function generateLesson() {
     3. A prompt for a suitable educational image that is also culturally relevant to the specified region and inspired by the visual style of the provided video (if applicable).
     4. A short 'nextStepHint' to smoothly transition to the next topic (under 15 words). This should be an empty string for the very last step.
     Finally, at the end of the JSON, provide a 'keyTakeaways' array, containing one short key takeaway sentence for each lesson step.
-    Also, provide a 'uiTranslations' object containing translations for standard UI text.`;
+    Also, provide a 'uiTranslations' object containing translations for standard UI text, including a completionTitle and completionMessage for the final completion screen.`;
       
     contentParts.unshift({ text: textPrompt });
 
@@ -2380,6 +2384,13 @@ function getLessonScript(lessonJsonString: string) {
 
     function renderCompletionScreen() {
         floatingBackBtn.style.display = 'none';
+        const completionTitleText = renderFormattedText(ui.completionTitle || ui.done || ui.finishLesson || 'Congratulations!');
+        const completionMessageText = ui.completionMessage ? renderFormattedText(ui.completionMessage) : '';
+        const lessonTitleText = renderFormattedText(lessonData.title);
+        const completionMessageHtml = completionMessageText
+            ? \`<p>\${completionMessageText} <strong>\${lessonTitleText}</strong></p>\`
+            : \`<p><strong>\${lessonTitleText}</strong></p>\`;
+
         contentEl.innerHTML = \`
             <div class="completion-screen">
                 <div class="confetti-container"></div>
@@ -2405,8 +2416,8 @@ function getLessonScript(lessonJsonString: string) {
                         <path d="M140,60 C170,60 170,110 140,110" fill="none" stroke="url(#grad1)" stroke-width="5"/>
                     </svg>
                 </div>
-                <h2>Congratulations!</h2>
-                <p>You have completed the lesson: <strong>\${renderFormattedText(lessonData.title)}</strong></p>
+                <h2>\${completionTitleText}</h2>
+                \${completionMessageHtml}
             </div>\`;
         typesetMath();
     }
