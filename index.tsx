@@ -27,6 +27,116 @@ const md = new MarkdownIt({
 
 const INDIC_CHAR_RANGES = '\\u0900-\\u097F\\u0980-\\u09FF\\u0A80-\\u0AFF\\u0C00-\\u0C7F';
 const INDIC_TEXT_REGEX = new RegExp(`[${INDIC_CHAR_RANGES}]`);
+const LATEX_COMMANDS_TO_REPAIR = [
+    'frac', 'sqrt', 'text', 'mbox', 'mathrm', 'times', 'cdot', 'div',
+    'leq', 'le', 'geq', 'ge', 'neq', 'ne', 'pi', 'theta',
+    'sin', 'cos', 'tan', 'log', 'ln'
+];
+const LATEX_COMMAND_REPAIR_REGEX = new RegExp(`(^|[^\\\\A-Za-z])(${LATEX_COMMANDS_TO_REPAIR.join('|')})(?=\\s*\\{)`, 'g');
+const TARGET_LANGUAGE_SCRIPT_INFO: Record<string, { script: string; regex: RegExp; instruction: string; voice: string }> = {
+    Hindi: {
+        script: 'Devanagari',
+        regex: /[\u0900-\u097F]/,
+        instruction: 'Use native Devanagari script for Hindi. Do not use romanized Hindi or Hinglish.',
+        voice: 'Hindi'
+    },
+    Marathi: {
+        script: 'Devanagari',
+        regex: /[\u0900-\u097F]/,
+        instruction: 'Use native Devanagari script for Marathi. Do not use romanized Marathi.',
+        voice: 'Marathi'
+    },
+    Gujarati: {
+        script: 'Gujarati',
+        regex: /[\u0A80-\u0AFF]/,
+        instruction: 'Use native Gujarati script. Do not use romanized Gujarati.',
+        voice: 'Gujarati'
+    },
+    Telugu: {
+        script: 'Telugu',
+        regex: /[\u0C00-\u0C7F]/,
+        instruction: 'Use native Telugu script. Do not use romanized Telugu.',
+        voice: 'Telugu'
+    }
+};
+const UI_TRANSLATION_DEFAULTS: Record<string, Record<string, string>> = {
+    Hindi: {
+        lessonSummary: 'पाठ सारांश',
+        keyTakeaways: 'मुख्य बातें',
+        items: 'वस्तुएं',
+        targets: 'लक्ष्य',
+        true: 'सही',
+        false: 'गलत',
+        finishLesson: 'पाठ समाप्त करें',
+        letsExplore: 'चलिए, शुरू करते हैं',
+        back: 'वापस',
+        correctFeedback: 'सही!',
+        incorrectFeedback: 'फिर से कोशिश करें',
+        summary: 'सारांश',
+        page: 'पृष्ठ',
+        done: 'पूर्ण',
+        next: 'आगे',
+        completionTitle: 'बधाई हो!',
+        completionMessage: 'आपने यह पाठ पूरा कर लिया है:'
+    },
+    Marathi: {
+        lessonSummary: 'पाठाचा सारांश',
+        keyTakeaways: 'मुख्य मुद्दे',
+        items: 'घटक',
+        targets: 'लक्ष्य',
+        true: 'बरोबर',
+        false: 'चूक',
+        finishLesson: 'पाठ पूर्ण करा',
+        letsExplore: 'चला, सुरू करूया',
+        back: 'मागे',
+        correctFeedback: 'बरोबर!',
+        incorrectFeedback: 'पुन्हा प्रयत्न करा',
+        summary: 'सारांश',
+        page: 'पान',
+        done: 'पूर्ण',
+        next: 'पुढे',
+        completionTitle: 'अभिनंदन!',
+        completionMessage: 'तुम्ही हा पाठ पूर्ण केला आहे:'
+    },
+    Gujarati: {
+        lessonSummary: 'પાઠનો સારાંશ',
+        keyTakeaways: 'મુખ્ય મુદ્દાઓ',
+        items: 'વસ્તુઓ',
+        targets: 'લક્ષ્યો',
+        true: 'સાચું',
+        false: 'ખોટું',
+        finishLesson: 'પાઠ પૂર્ણ કરો',
+        letsExplore: 'ચાલો, શરૂ કરીએ',
+        back: 'પાછળ',
+        correctFeedback: 'સાચું!',
+        incorrectFeedback: 'ફરી પ્રયાસ કરો',
+        summary: 'સારાંશ',
+        page: 'પૃષ્ઠ',
+        done: 'પૂર્ણ',
+        next: 'આગળ',
+        completionTitle: 'અભિનંદન!',
+        completionMessage: 'તમે આ પાઠ પૂર્ણ કર્યો છે:'
+    },
+    Telugu: {
+        lessonSummary: 'పాఠ సారాంశం',
+        keyTakeaways: 'ముఖ్యాంశాలు',
+        items: 'అంశాలు',
+        targets: 'లక్ష్యాలు',
+        true: 'సరైంది',
+        false: 'తప్పు',
+        finishLesson: 'పాఠాన్ని ముగించండి',
+        letsExplore: 'రండి, ప్రారంభిద్దాం',
+        back: 'వెనుకకు',
+        correctFeedback: 'సరైంది!',
+        incorrectFeedback: 'మళ్లీ ప్రయత్నించండి',
+        summary: 'సారాంశం',
+        page: 'పేజీ',
+        done: 'పూర్తి',
+        next: 'తరువాత',
+        completionTitle: 'అభినందనలు!',
+        completionMessage: 'మీరు ఈ పాఠాన్ని పూర్తి చేశారు:'
+    }
+};
 
 function wrapIndicTextInLatex(mathContent: string): string {
     if (!INDIC_TEXT_REGEX.test(mathContent)) return mathContent;
@@ -53,11 +163,38 @@ function wrapIndicTextInLatex(mathContent: string): string {
     return normalized.replace(/@@TEXT_CMD_(\d+)@@/g, (_, index) => protectedTextCommands[Number(index)] ?? '');
 }
 
-function normalizeMultilingualLatex(text: string): string {
-    if (!text || !INDIC_TEXT_REGEX.test(text) || !text.includes('$')) return text;
-    return text.replace(/(\$\$?)([\s\S]*?)\1/g, (match, delimiter: string, mathContent: string) => {
-        return `${delimiter}${wrapIndicTextInLatex(mathContent)}${delimiter}`;
+function repairLatexCommandSlashes(mathContent: string): string {
+    return mathContent.replace(LATEX_COMMAND_REPAIR_REGEX, (_match, prefix: string, command: string) => `${prefix}\\${command}`);
+}
+
+function normalizeSimpleNumericFractions(mathContent: string): string {
+    return mathContent.replace(/(^|[^\\A-Za-z0-9])(\d+)\s*\/\s*(\d+)(?![A-Za-z0-9])/g, (_match, prefix: string, numerator: string, denominator: string) => {
+        return `${prefix}\\frac{${numerator}}{${denominator}}`;
     });
+}
+
+function normalizeLatexMathContent(mathContent: string): string {
+    let normalized = repairLatexCommandSlashes(mathContent);
+    normalized = normalizeSimpleNumericFractions(normalized);
+    return INDIC_TEXT_REGEX.test(normalized) ? wrapIndicTextInLatex(normalized) : normalized;
+}
+
+function normalizeMultilingualLatex(text: string): string {
+    if (!text || !text.includes('$')) return text;
+    return text.replace(/(\$\$?)([\s\S]*?)\1/g, (match, delimiter: string, mathContent: string) => {
+        return `${delimiter}${normalizeLatexMathContent(mathContent)}${delimiter}`;
+    });
+}
+
+function getLanguageScriptInstruction(language: string): string {
+    return TARGET_LANGUAGE_SCRIPT_INFO[language]?.instruction || 'Use natural, high-quality English.';
+}
+
+function getVoiceLanguageInstruction(language: string): string {
+    const info = TARGET_LANGUAGE_SCRIPT_INFO[language];
+    return info
+        ? `Read the following aloud naturally in ${info.voice}. Preserve the meaning and pronounce mathematical symbols and equations naturally.`
+        : 'Read the following aloud in a clear, professional female voice with an Indian English accent. Pronounce mathematical symbols and equations naturally.';
 }
 
 // --- DATA STRUCTURES ---
@@ -144,6 +281,8 @@ const autoTranslationTimers = new Map<string, number>();
 const autoTranslationVersions = new Map<string, number>();
 
 // --- AUDIO STATE ---
+const TTS_MAX_ATTEMPTS = 3;
+const TTS_RETRY_BASE_DELAY_MS = 900;
 const audioCache = new Map<string, AudioBuffer>();
 let currentAudioSource: AudioBufferSourceNode | null = null;
 let outputAudioContext: AudioContext;
@@ -323,7 +462,7 @@ function getAudioTextForScope(scope: string, stepNum?: string): { text: string; 
 function preprocessTextForSpeech(rawText: string): string {
     if (!rawText) return '';
 
-    let text = stripHtmlToText(rawText);
+    let text = normalizeMultilingualLatex(stripHtmlToText(rawText));
     text = text.replace(/\|\|\|/g, '');
 
     const mathRegex = /\$\$([\s\S]+?)\$\$|\$([\s\S]+?)\$/g;
@@ -368,6 +507,10 @@ function preprocessTextForSpeech(rawText: string): string {
     return text.replace(/\s+/g, ' ').trim();
 }
 
+function delay(ms: number): Promise<void> {
+    return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
 
 /**
  * Reusable function to call the Gemini TTS API.
@@ -376,23 +519,42 @@ function preprocessTextForSpeech(rawText: string): string {
  */
 async function getTtsAudio(rawText: string): Promise<string | null> {
     const processedText = preprocessTextForSpeech(rawText);
-    const textToSpeak = `Read the following aloud in a clear, professional female voice with an Indian English accent. Pronounce mathematical symbols and equations naturally. Do not say "dollar sign" for LaTeX delimiters. Follow the natural phrasing of the sentence:
+    if (!processedText) return null;
+
+    const textToSpeak = `${getVoiceLanguageInstruction(languageSelect.value)} Do not say "dollar sign" for LaTeX delimiters. Follow the natural phrasing of the sentence and do not translate the text:
 "${processedText}"`;
 
-    const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text: textToSpeak }] }],
-        config: {
-            responseModalities: [Modality.AUDIO],
-            speechConfig: {
-                voiceConfig: {
-                    // 'Kore' is a clear female voice that responds well to prompting.
-                    prebuiltVoiceConfig: { voiceName: 'Kore' },
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= TTS_MAX_ATTEMPTS; attempt++) {
+        try {
+            const response = await ai.models.generateContent({
+                model: "gemini-2.5-flash-preview-tts",
+                contents: [{ parts: [{ text: textToSpeak }] }],
+                config: {
+                    responseModalities: [Modality.AUDIO],
+                    speechConfig: {
+                        voiceConfig: {
+                            // 'Kore' is a clear female voice that responds well to prompting.
+                            prebuiltVoiceConfig: { voiceName: 'Kore' },
+                        },
+                    },
                 },
-            },
-        },
-    });
-    return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data ?? null;
+            });
+
+            const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data ?? null;
+            if (audioData) return audioData;
+
+            lastError = new Error('No audio data received from the API.');
+        } catch (error) {
+            lastError = error;
+        }
+
+        if (attempt < TTS_MAX_ATTEMPTS) {
+            await delay(TTS_RETRY_BASE_DELAY_MS * attempt);
+        }
+    }
+
+    throw lastError || new Error('No audio data received from the API.');
 }
 
 
@@ -566,6 +728,13 @@ function createPageAudioButton(scope: 'engaging-question' | 'step' | 'summary', 
     return button;
 }
 
+function getAudioTaskLabel(id: string): string {
+    if (id === 'engaging-question') return 'opening question';
+    if (id.startsWith('step-')) return `step ${id.split('-')[1]}`;
+    if (id.startsWith('summary-')) return `summary page ${id.split('-')[1]}`;
+    return id;
+}
+
 /**
  * Updates the UI to show download links for audio files that failed to generate.
  * @param failedIds A list of IDs ('engaging-question', 'step-X', 'summary') for failed audio tasks.
@@ -576,7 +745,8 @@ function updateUiWithFailedAudioLinks(failedIds: string[]) {
 
     if (failedIds.length === 0) return;
 
-    showError(`Some audio files could not be generated and were excluded from the ZIP file. You can try downloading them individually.`);
+    const failedLabels = failedIds.map(getAudioTaskLabel).join(', ');
+    showError(`Some audio files could not be generated after retries and were excluded from the ZIP file: ${failedLabels}. You can try downloading them individually.`);
 
     failedIds.forEach(id => {
         let scope: string;
@@ -742,6 +912,151 @@ function getFriendlyErrorMessage(prefix: string, error: any): string {
     return compactMessage ? `${prefix}: ${compactMessage}` : `${prefix}.`;
 }
 
+function cleanEditableMarkup(text: string): string {
+    return normalizeMultilingualLatex(text
+        .replace(/\u00a0/g, ' ')
+        .replace(/[\u200b-\u200d\ufeff]/g, '')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim());
+}
+
+function getMathAnnotationFromRenderedNode(element: Element): string {
+    const annotation = element.querySelector('annotation[encoding="application/x-tex"]');
+    return annotation?.textContent || element.textContent || '';
+}
+
+function replaceRenderedMathWithLatex(root: HTMLElement) {
+    root.querySelectorAll('eq, eqn').forEach(node => {
+        const tagName = node.tagName.toLowerCase();
+        const delimiter = tagName === 'eqn' ? '$$' : '$';
+        const latex = normalizeLatexMathContent(getMathAnnotationFromRenderedNode(node));
+        node.replaceWith(document.createTextNode(`${delimiter}${latex}${delimiter}`));
+    });
+
+    root.querySelectorAll('.katex').forEach(node => {
+        if (node.closest('eq, eqn')) return;
+        const latex = normalizeLatexMathContent(getMathAnnotationFromRenderedNode(node));
+        node.replaceWith(document.createTextNode(`$${latex}$`));
+    });
+}
+
+function serializeEditableNode(node: Node): string {
+    if (node.nodeType === Node.TEXT_NODE) {
+        return node.textContent || '';
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+        return '';
+    }
+
+    const element = node as HTMLElement;
+    const tagName = element.tagName.toLowerCase();
+
+    if (tagName === 'br') return '\n';
+    if (element.classList.contains('katex-html')) return '';
+
+    const childText = Array.from(element.childNodes).map(serializeEditableNode).join('');
+
+    if (tagName === 'strong' && element.classList.contains('key-term')) {
+        const termText = cleanEditableMarkup(childText);
+        return termText ? `|||${termText}|||` : '';
+    }
+
+    if (['p', 'div', 'li', 'h1', 'h2', 'h3'].includes(tagName)) {
+        return `${childText}\n`;
+    }
+
+    return childText;
+}
+
+function getCanonicalEditableMarkup(element: HTMLElement, fieldPath: string): string {
+    if (fieldPath === 'keyTakeaways' || fieldPath === 'image.prompt') {
+        return cleanEditableMarkup(element.innerText || element.textContent || '');
+    }
+
+    const clone = element.cloneNode(true) as HTMLElement;
+    replaceRenderedMathWithLatex(clone);
+    return cleanEditableMarkup(serializeEditableNode(clone));
+}
+
+function renderCanonicalTextForPreview(text: string, fieldPath: string): string {
+    const normalized = normalizeMultilingualLatex(text || '');
+    if (!normalized) return '';
+
+    let rendered = md.render(normalized).trim();
+    if (fieldPath === 'explanation') {
+        rendered = rendered.replace(/\|\|\|(.*?)\|\|\|/g, '<strong class="key-term">$1</strong>');
+    }
+    return rendered;
+}
+
+function protectMathForTranslation(text: string): { text: string; placeholders: string[] } {
+    const placeholders: string[] = [];
+    const protectedText = normalizeMultilingualLatex(text).replace(/(\$\$?)([\s\S]*?)\1/g, (match) => {
+        const placeholder = `{{MATH_${placeholders.length}}}`;
+        placeholders.push(match);
+        return placeholder;
+    });
+
+    return { text: protectedText, placeholders };
+}
+
+function restoreMathPlaceholders(text: string, placeholders: string[]): string {
+    return placeholders.reduce((result, math, index) => {
+        return result.replace(new RegExp(`\\{\\{MATH_${index}\\}\\}`, 'g'), math);
+    }, text);
+}
+
+function hasLikelyUntranslatedEnglishPhrase(text: string, targetLanguage: string): boolean {
+    if (!TARGET_LANGUAGE_SCRIPT_INFO[targetLanguage]) return false;
+
+    const candidateText = text
+        .replace(/\{\{MATH_\d+\}\}/g, ' ')
+        .replace(/\|\|\|/g, ' ');
+    const ordinaryEnglishWords = candidateText.match(/\b[A-Za-z][A-Za-z-]{2,}\b/g) || [];
+    const allowedTokens = new Set(['API', 'HTML', 'URL', 'AI', 'PDF', 'TTS', 'LaTeX', 'KaTeX', 'MathJax']);
+
+    return ordinaryEnglishWords.filter(word => !allowedTokens.has(word) && !/^[A-Z]{2,}$/.test(word)).length >= 2;
+}
+
+async function repairRemainingEnglishPhrases(translatedText: string, targetLanguage: string): Promise<string> {
+    const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: {
+            parts: [{
+                text: `This ${targetLanguage} lesson field still contains ordinary English words or phrases.
+Translate the remaining ordinary English text into ${targetLanguage}.
+${getLanguageScriptInstruction(targetLanguage)}
+Keep placeholders like {{MATH_0}}, triple-pipe key-term markers, acronyms, variables, formulas, and unavoidable proper nouns unchanged.
+Return JSON only with this shape: {"translatedText":"..."}.
+
+Text to repair:
+${translatedText}`
+            }]
+        },
+        config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    translatedText: { type: Type.STRING }
+                },
+                required: ['translatedText']
+            }
+        }
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    const repairedText = cleanDataObject(parsed.translatedText || '');
+    if (typeof repairedText !== 'string') {
+        throw new Error('The AI returned an invalid translation repair response.');
+    }
+
+    return repairedText;
+}
+
 function updateNestedValue(obj: any, path: string, newValue: any, lang?: keyof BilingualText) {
     const fields = path.split('.');
     let current = obj;
@@ -818,20 +1133,25 @@ function cancelPendingAutoTranslation(fieldPath: string, stepAttr?: string, inde
 }
 
 async function translateEditedEnglishText(sourceText: string, targetLanguage: string, preserveHtml: boolean): Promise<string> {
+    const normalizedSource = cleanEditableMarkup(sourceText);
+    const { text: protectedSource, placeholders } = protectMathForTranslation(normalizedSource);
     const formatInstruction = preserveHtml
-        ? `The input may contain HTML produced from markdown, KaTeX math markup, key-term spans, and LaTeX delimiters. Translate only the human-readable English lesson text into ${targetLanguage}. Preserve HTML tags, attributes, tag nesting, KaTeX markup, LaTeX math, numbers, variables, URLs, and image/file references exactly.`
-        : `Translate the plain English lesson text into ${targetLanguage}. Preserve LaTeX math, numbers, variables, URLs, and punctuation structure where appropriate.`;
+        ? `The input is clean lesson markup. Translate every ordinary English word into ${targetLanguage}. Preserve line breaks, punctuation, and triple-pipe key-term markers like |||term|||, but translate the words inside those markers.`
+        : `Translate this plain lesson text into ${targetLanguage}. Preserve punctuation and line breaks.`;
 
     const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: {
             parts: [{
                 text: `You are updating one edited lesson field. ${formatInstruction}
+${getLanguageScriptInstruction(targetLanguage)}
+Keep placeholders like {{MATH_0}} exactly unchanged. They represent math and will be restored after translation.
+Do not leave ordinary English lesson phrases untranslated. Only acronyms, variables, formulas, and unavoidable proper nouns may stay unchanged.
 Return JSON only with this shape: {"translatedText":"..."}.
 Do not add explanations, labels, markdown fences, or extra keys.
 
 English source:
-${sourceText}`
+${protectedSource}`
             }]
         },
         config: {
@@ -847,12 +1167,16 @@ ${sourceText}`
     });
 
     const parsed = JSON.parse(response.text || '{}');
-    const translatedText = cleanDataObject(parsed.translatedText || '');
+    let translatedText = cleanDataObject(parsed.translatedText || '');
     if (typeof translatedText !== 'string') {
         throw new Error('The AI returned an invalid translation response.');
     }
 
-    return normalizeMultilingualLatex(translatedText);
+    if (hasLikelyUntranslatedEnglishPhrase(translatedText, targetLanguage)) {
+        translatedText = await repairRemainingEnglishPhrases(translatedText, targetLanguage);
+    }
+
+    return cleanEditableMarkup(restoreMathPlaceholders(translatedText, placeholders));
 }
 
 function applyAutoTranslationResult(
@@ -867,7 +1191,7 @@ function applyAutoTranslationResult(
 
     if (targetElement?.isConnected) {
         if (preserveHtml) {
-            targetElement.innerHTML = translatedText;
+            targetElement.innerHTML = renderCanonicalTextForPreview(translatedText, fieldPath);
         } else {
             targetElement.textContent = translatedText;
         }
@@ -888,7 +1212,7 @@ function scheduleAutoTranslationFromEnglishEdit(
 
     const key = getAutoTranslationKey(fieldPath, stepAttr, indexAttr);
     const preserveHtml = fieldPath !== 'keyTakeaways';
-    const sourceText = preserveHtml ? sourceElement.innerHTML : sourceElement.innerText;
+    const sourceText = getCanonicalEditableMarkup(sourceElement, fieldPath);
     const targetElement = getTargetLanguageEditor(sourceElement);
     const version = (autoTranslationVersions.get(key) || 0) + 1;
 
@@ -1033,6 +1357,49 @@ function normalizeLessonMathSyntax<T>(data: T): T {
     return data;
 }
 
+function hasExpectedTargetScript(text: string, language: string): boolean {
+    const info = TARGET_LANGUAGE_SCRIPT_INFO[language];
+    if (!info) return true;
+    return info.regex.test(stripHtmlToText(text || ''));
+}
+
+function repairUiTranslationValue(value: string | BilingualText | undefined, fallback: string, language: string): string | BilingualText {
+    if (language === 'English') {
+        return value || fallback;
+    }
+
+    if (value && typeof value === 'object') {
+        const en = value.en || fallback;
+        const targetLang = value.targetLang && hasExpectedTargetScript(value.targetLang, language)
+            ? value.targetLang
+            : fallback;
+        return { en, targetLang };
+    }
+
+    if (typeof value === 'string' && hasExpectedTargetScript(value, language)) {
+        return value;
+    }
+
+    return fallback;
+}
+
+function repairUiTranslations(lesson: Lesson, language: string): Lesson {
+    const defaults = UI_TRANSLATION_DEFAULTS[language];
+    if (!defaults) return lesson;
+
+    lesson.uiTranslations = lesson.uiTranslations || ({} as UiTranslations);
+    Object.entries(defaults).forEach(([key, fallback]) => {
+        const ui = lesson.uiTranslations as any;
+        ui[key] = repairUiTranslationValue(ui[key], fallback, language);
+    });
+
+    return lesson;
+}
+
+function prepareLessonData(data: any, language: string): Lesson {
+    return repairUiTranslations(normalizeLessonMathSyntax(cleanDataObject(data)) as Lesson, language);
+}
+
 function getTextValue(data: any): string {
     if (typeof data === 'string') return data;
     if (data && typeof data === 'object') {
@@ -1121,7 +1488,7 @@ function loadAppState() {
 
         const savedLessonData = localStorage.getItem(APP_STATE_KEYS.lessonData);
         if (savedLessonData) {
-            currentLessonData = normalizeLessonMathSyntax(cleanDataObject(JSON.parse(savedLessonData)));
+            currentLessonData = prepareLessonData(JSON.parse(savedLessonData), languageSelect.value);
             renderPreview(currentLessonData!);
             placeholder.style.display = 'none';
             lessonPreviewContainer.style.display = 'flex';
@@ -1179,7 +1546,7 @@ async function generateLesson() {
         type: Type.OBJECT,
         properties: {
             en: { type: Type.STRING, description: "The text content in English." },
-            targetLang: { type: Type.STRING, description: `The text content in ${language}.` }
+            targetLang: { type: Type.STRING, description: `The text content in ${language}. ${getLanguageScriptInstruction(language)}` }
         },
         required: ["en", "targetLang"]
     };
@@ -1194,6 +1561,8 @@ async function generateLesson() {
         properties: {
             lessonSummary: textSchema,
             keyTakeaways: textSchema,
+            items: textSchema,
+            targets: textSchema,
             true: textSchema,
             false: textSchema,
             finishLesson: textSchema,
@@ -1208,7 +1577,7 @@ async function generateLesson() {
             completionTitle: textSchemaWithDesc("Short completion screen heading, translated naturally. Example: Congratulations!"),
             completionMessage: textSchemaWithDesc("Completion screen message before the lesson title, translated naturally. Example: You have completed the lesson:")
         },
-        required: ["lessonSummary", "keyTakeaways", "finishLesson", "letsExplore", "back", "completionTitle", "completionMessage"]
+        required: ["lessonSummary", "keyTakeaways", "items", "targets", "true", "false", "finishLesson", "letsExplore", "back", "correctFeedback", "incorrectFeedback", "summary", "page", "done", "next", "completionTitle", "completionMessage"]
     };
 
     const lessonSchema = {
@@ -1293,9 +1662,10 @@ async function generateLesson() {
       ? `Give special consideration to this instruction: "${specificPrompt}".`
       : '';
 
-    let languageInstruction = `The entire lesson, including all text, must be in the ${language} language. For example, if the language is Hindi and the context is Indian, use expressions like 'Chaliye, hum vishay ko samjhte hain'.`;
+    const scriptInstruction = getLanguageScriptInstruction(language);
+    let languageInstruction = `The entire lesson, including all text, must be in the ${language} language. ${scriptInstruction}`;
     if (isBilingual) {
-        languageInstruction = `The entire lesson needs to be bilingual. For every text field (like title, explanation, question, etc.), you MUST provide a JSON object with two keys: 'en' for the English version, and 'targetLang' for the ${language} version. The 'targetLang' value must be a high-quality, natural-sounding translation. For example, if the language is Hindi and the context is Indian, use expressions like 'Chaliye, hum vishay ko samjhte hain' in the 'targetLang' field.`;
+        languageInstruction = `The entire lesson needs to be bilingual. For every text field (like title, explanation, question, etc.), you MUST provide a JSON object with two keys: 'en' for the English version, and 'targetLang' for the ${language} version. The 'targetLang' value must be a complete, high-quality, natural-sounding translation of the English value. ${scriptInstruction} Translate ordinary lesson text fully; only keep acronyms, variables, formulas, and unavoidable proper nouns unchanged.`;
     }
 
     const textPrompt = `You are an expert curriculum designer specializing in engaging, localized content. Create an impressive, ${pages}-step lesson plan ${topic ? `about "${topic}"` : 'based on the provided video context'} for a grade ${grade} ${subject} class.
@@ -1306,6 +1676,7 @@ async function generateLesson() {
     1. For ALL mathematical formulas, variables, or expressions, you MUST use LaTeX notation wrapped in single dollar signs ($...$) for inline math (e.g., $E=mc^2$) and double dollar signs ($$...$$) for block math. This applies to explanations, titles, and takeaways.
     2. For any descriptive words or units inside math environments, you MUST use the \\text{} command (e.g., $l = 22 \\text{ cm}$) so they are rendered as text, not variables.
     3. JSON ESCAPING: In your JSON response, every backslash for LaTeX MUST be double-escaped (e.g., use "\\\\frac" for \frac, "\\\\text" for \text, and "\\\\theta" for \theta). This is vital to prevent character corruption.
+    4. Fractions must always use \\frac{numerator}{denominator}; never output plain frac{...}{...}. Put any Hindi/Marathi/Gujarati/Telugu words inside math with \\text{...}.
     Provide the output in a structured JSON format.
     The lesson must begin with an overall 'engagingQuestion' to spark student curiosity.
     For each step, provide:
@@ -1314,7 +1685,7 @@ async function generateLesson() {
     3. A prompt for a suitable educational image that is also culturally relevant to the specified region and inspired by the visual style of the provided video (if applicable).
     4. A short 'nextStepHint' to smoothly transition to the next topic (under 15 words). This should be an empty string for the very last step.
     Finally, at the end of the JSON, provide a 'keyTakeaways' array, containing one short key takeaway sentence for each lesson step.
-    Also, provide a 'uiTranslations' object containing translations for standard UI text, including a completionTitle and completionMessage for the final completion screen.`;
+    Also, provide a complete 'uiTranslations' object containing translations for all standard UI text: lessonSummary, keyTakeaways, items, targets, true, false, finishLesson, letsExplore, back, correctFeedback, incorrectFeedback, summary, page, done, next, completionTitle, and completionMessage. For non-English target languages, these UI labels must use the native script, not romanized text.`;
       
     contentParts.unshift({ text: textPrompt });
 
@@ -1329,7 +1700,7 @@ async function generateLesson() {
 
     // FIX: Clean the entire lesson object from the API to remove unwanted entities like &nbsp;
     // This ensures both the preview and the downloaded file have clean data.
-    currentLessonData = normalizeLessonMathSyntax(cleanDataObject(JSON.parse(response.text)));
+    currentLessonData = prepareLessonData(JSON.parse(response.text), language);
 
     // FIX: Check for empty or invalid lesson data to prevent blank screen
     if (!currentLessonData || !currentLessonData.steps || currentLessonData.steps.length === 0) {
@@ -1477,8 +1848,7 @@ function renderPreview(lesson: Lesson) {
 
   const renderContent = (data: string | BilingualText): string | BilingualText => {
       const process = (text: string) => {
-          if (!text) return '';
-          return md.render(normalizeMultilingualLatex(text)).trim();
+          return renderCanonicalTextForPreview(text, 'content');
       };
       if (typeof data === 'object') {
           return { en: process(data.en), targetLang: process(data.targetLang) };
@@ -1507,12 +1877,7 @@ function renderPreview(lesson: Lesson) {
 
     const getExplanationHtml = (explanation: string | BilingualText): string | BilingualText => {
         const process = (text: string) => {
-            if (!text) return '';
-            // First render with markdown-it which handles LaTeX via the plugin
-            let rendered = md.render(normalizeMultilingualLatex(text));
-            // Then apply the custom key-term highlighting
-            rendered = rendered.replace(/\|\|\|(.*?)\|\|\|/g, '<strong class="key-term">$1</strong>');
-            return rendered;
+            return renderCanonicalTextForPreview(text, 'explanation');
         };
         if (typeof explanation === 'object') {
             return { en: process(explanation.en), targetLang: process(explanation.targetLang) };
@@ -1521,7 +1886,7 @@ function renderPreview(lesson: Lesson) {
     };
     
     const explanationContent = renderBilingualField(getExplanationHtml(step.explanation), isBilingual, { 'data-step': String(step.step), 'data-field': 'explanation' }, true);
-    const titleContent = renderBilingualField(step.title, isBilingual, { 'data-step': String(step.step), 'data-field': 'title' });
+    const titleContent = renderBilingualField(renderContent(step.title), isBilingual, { 'data-step': String(step.step), 'data-field': 'title' }, true);
     
     // FIX: Check for empty hint content before rendering the hint container.
     // The AI might return an object with empty strings for bilingual hints on the last step,
@@ -1536,7 +1901,7 @@ function renderPreview(lesson: Lesson) {
     const nextStepHintContent = isHintNotEmpty(step.nextStepHint)
         ? `<div class="preview-next-hint">
                <i class="fa-solid fa-arrow-right-long"></i>
-               ${renderBilingualField(step.nextStepHint, isBilingual, { 'data-step': String(step.step), 'data-field': 'nextStepHint' })}
+               ${renderBilingualField(renderContent(step.nextStepHint), isBilingual, { 'data-step': String(step.step), 'data-field': 'nextStepHint' }, true)}
            </div>` 
         : '';
 
@@ -1675,16 +2040,16 @@ function handleTextEdit(event: Event) {
         audioCache.delete('engaging-question-full-audio');
     }
 
-    const value = target.innerHTML; // Always use innerHTML for rich text
+    const value = getCanonicalEditableMarkup(target, fieldPath);
 
     if (fieldPath === 'keyTakeaways' && indexAttr) {
         audioCache.delete('summary-full-audio');
         const index = parseInt(indexAttr, 10);
         const takeaway = currentLessonData!.keyTakeaways[index];
         if (lang && typeof takeaway === 'object') {
-            (takeaway as BilingualText)[lang as keyof BilingualText] = target.innerText; // no rich text in takeaways
+            (takeaway as BilingualText)[lang as keyof BilingualText] = value;
         } else {
-            currentLessonData!.keyTakeaways[index] = target.innerText;
+            currentLessonData!.keyTakeaways[index] = value;
         }
         if (shouldCancelAutoTranslation) {
             cancelPendingAutoTranslation(fieldPath, stepAttr, indexAttr, target);
@@ -2090,6 +2455,8 @@ async function createAndDownloadZip() {
 
   try {
     const isBilingual = languageSelect.value !== 'English';
+    currentLessonData = prepareLessonData(currentLessonData, languageSelect.value);
+    saveAppState();
     const lessonForExport = isBilingual ? getMonolingualLesson(currentLessonData) : currentLessonData;
 
     const zip = new JSZip();
@@ -2110,7 +2477,7 @@ async function createAndDownloadZip() {
     const tempDiv = document.createElement('div');
     const getPlainTextForAudio = (text: string): string => {
         tempDiv.innerHTML = text;
-        return tempDiv.innerText || text;
+        return normalizeMultilingualLatex(tempDiv.innerText || text);
     };
     const getTextForAudio = (data: string | BilingualText): string => {
         if (typeof data === 'string') {
@@ -2354,6 +2721,14 @@ function getLessonScript(lessonJsonString: string) {
 
     const GENERATED_INDIC_CHAR_RANGES = '\\u0900-\\u097F\\u0980-\\u09FF\\u0A80-\\u0AFF\\u0C00-\\u0C7F';
     const GENERATED_INDIC_TEXT_REGEX = new RegExp('[' + GENERATED_INDIC_CHAR_RANGES + ']');
+    const GENERATED_LATEX_COMMANDS_TO_REPAIR = [
+        'frac', 'sqrt', 'text', 'mbox', 'mathrm', 'times', 'cdot', 'div',
+        'leq', 'le', 'geq', 'ge', 'neq', 'ne', 'pi', 'theta',
+        'sin', 'cos', 'tan', 'log', 'ln'
+    ];
+    const GENERATED_BACKSLASH = String.fromCharCode(92);
+    const GENERATED_LATEX_COMMAND_REPAIR_REGEX = new RegExp('(^|[^' + GENERATED_BACKSLASH + GENERATED_BACKSLASH + 'A-Za-z])(' + GENERATED_LATEX_COMMANDS_TO_REPAIR.join('|') + ')(?=[ \\t]*[{])', 'g');
+    const GENERATED_NUMERIC_FRACTION_REGEX = new RegExp('(^|[^' + GENERATED_BACKSLASH + GENERATED_BACKSLASH + 'A-Za-z0-9])([0-9]+)[ \\t]*/[ \\t]*([0-9]+)(?![A-Za-z0-9])', 'g');
 
     function wrapIndicTextInLatex(mathContent) {
         if (!GENERATED_INDIC_TEXT_REGEX.test(mathContent)) return mathContent;
@@ -2382,10 +2757,28 @@ function getLessonScript(lessonJsonString: string) {
         });
     }
 
+    function repairLatexCommandSlashes(mathContent) {
+        return mathContent.replace(GENERATED_LATEX_COMMAND_REPAIR_REGEX, function(match, prefix, command) {
+            return prefix + GENERATED_BACKSLASH + command;
+        });
+    }
+
+    function normalizeSimpleNumericFractions(mathContent) {
+        return mathContent.replace(GENERATED_NUMERIC_FRACTION_REGEX, function(match, prefix, numerator, denominator) {
+            return prefix + GENERATED_BACKSLASH + 'frac{' + numerator + '}{' + denominator + '}';
+        });
+    }
+
+    function normalizeLatexMathContent(mathContent) {
+        let normalized = repairLatexCommandSlashes(mathContent);
+        normalized = normalizeSimpleNumericFractions(normalized);
+        return GENERATED_INDIC_TEXT_REGEX.test(normalized) ? wrapIndicTextInLatex(normalized) : normalized;
+    }
+
     function normalizeMultilingualLatex(text) {
-        if (!text || !GENERATED_INDIC_TEXT_REGEX.test(text) || text.indexOf('$') === -1) return text;
+        if (!text || text.indexOf('$') === -1) return text;
         return text.replace(/(\\$\\$?)([\\s\\S]*?)\\1/g, function(match, delimiter, mathContent) {
-            return delimiter + wrapIndicTextInLatex(mathContent) + delimiter;
+            return delimiter + normalizeLatexMathContent(mathContent) + delimiter;
         });
     }
 
