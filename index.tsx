@@ -2233,7 +2233,7 @@ function getLessonScript(lessonJsonString: string) {
         if (completionTimer) clearTimeout(completionTimer);
         completionTimer = setTimeout(function() {
             completionTimer = null;
-            if (id === 'player-engaging-question') {
+            if (id === 'player-engaging-question' && currentStep < 0) {
                 startLesson();
             } else if (id.startsWith('player-step-')) {
                 goToNextStep();
@@ -2283,7 +2283,8 @@ function getLessonScript(lessonJsonString: string) {
             appContainer.style.display = 'none';
             startScreen.style.display = 'flex';
             floatingBackBtn.style.display = 'none';
-            playAudio('player-engaging-question');
+            startBtn.style.display = '';
+            stopAllAudio();
         }
     }
 
@@ -2334,8 +2335,7 @@ function getLessonScript(lessonJsonString: string) {
 
     // Start sequence on button click
     startBtn.onclick = () => {
-        startBtn.style.display = 'none'; // Hide button once sequence starts
-        playAudio('player-engaging-question');
+        startLesson();
     };
 
     function startLesson() {
