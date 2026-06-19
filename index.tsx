@@ -197,6 +197,34 @@ function getVoiceLanguageInstruction(language: string): string {
         : 'Read the following aloud in a clear, professional female voice with an Indian English accent. Pronounce mathematical symbols and equations naturally.';
 }
 
+// --- IMAGE GENERATION CONFIG ---
+// gemini-3-pro-image (Nano Banana Pro) renders non-Latin scripts (Devanagari, Telugu,
+// Gujarati) far more accurately than the older gemini-2.5-flash-image. Used everywhere
+// images are generated or edited.
+const IMAGE_GENERATION_MODEL = 'gemini-3-pro-image';
+
+// When true, generated images may contain labels/text rendered in the lesson's target
+// language. When false, images stay illustration-only (all readable text lives in the
+// HTML overlay, which always renders perfectly). Flip this single flag to switch
+// strategies if baked-in vernacular text proves unreliable.
+const BAKE_TEXT_INTO_IMAGES = true;
+
+/**
+ * Augments an image-generation prompt with explicit instructions about whether (and in
+ * which script) text should be rendered inside the image. This is what makes vernacular
+ * labels come out in correct native script rather than garbled or romanized.
+ */
+function buildImagePrompt(basePrompt: string, language: string): string {
+    if (!BAKE_TEXT_INTO_IMAGES) {
+        return `${basePrompt}\n\nIMPORTANT: Do NOT render any text, letters, words, numbers, or labels inside the image. The illustration must be completely text-free.`;
+    }
+    const info = TARGET_LANGUAGE_SCRIPT_INFO[language];
+    if (!info) {
+        return `${basePrompt}\n\nIf any text or labels appear in the image, render them in clear, correctly spelled English.`;
+    }
+    return `${basePrompt}\n\nIMPORTANT: Any text, labels, or words that appear in the image MUST be written in ${language} using the native ${info.script} script — never English and never romanized/transliterated text. Spell every word correctly and render it cleanly and legibly with proper character shaping, conjuncts, and matras.`;
+}
+
 // --- DATA STRUCTURES ---
 
 interface BilingualText {
@@ -1598,7 +1626,9 @@ async function generateLesson() {
                             type: Type.OBJECT,
                             properties: {
                                 required: { type: Type.BOOLEAN },
-                                prompt: { type: Type.STRING, description: "Detailed prompt for an educational illustration. No text in the image." }
+                                prompt: { type: Type.STRING, description: BAKE_TEXT_INTO_IMAGES
+                                    ? `Detailed prompt for an educational illustration. Keep on-image text minimal; when a label, caption, or diagram word is essential, write that exact word/phrase in the prompt in ${language}${TARGET_LANGUAGE_SCRIPT_INFO[language] ? ` using native ${TARGET_LANGUAGE_SCRIPT_INFO[language].script} script` : ''} (never English or romanized) and put it in quotes so it is rendered verbatim.`
+                                    : "Detailed prompt for an educational illustration. No text in the image." }
                             },
                             required: ["required", "prompt"],
                         }
@@ -1744,9 +1774,9 @@ async function generateLesson() {
 
             try {
                 const imageResponse = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash-image',
+                    model: IMAGE_GENERATION_MODEL,
                     contents: {
-                        parts: [{ text: step.image.prompt }],
+                        parts: [{ text: buildImagePrompt(step.image.prompt, language) }],
                     },
                     config: {
                         responseModalities: [Modality.IMAGE],
@@ -2216,11 +2246,11 @@ async function handleImageEdit(event: Event) {
         const originalBase64 = step.image.base64Data!;
 
         const imageResponse = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image',
+            model: IMAGE_GENERATION_MODEL,
             contents: {
                 parts: [
                     { inlineData: { data: originalBase64, mimeType: 'image/jpeg' } },
-                    { text: prompt },
+                    { text: buildImagePrompt(prompt, languageSelect.value) },
                 ],
             },
             config: {
@@ -2305,9 +2335,9 @@ async function handleImageRegenerate(event: Event) {
 
     try {
         const imageResponse = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image',
+            model: IMAGE_GENERATION_MODEL,
             contents: {
-                parts: [{ text: prompt }],
+                parts: [{ text: buildImagePrompt(prompt, languageSelect.value) }],
             },
             config: {
                 responseModalities: [Modality.IMAGE],
